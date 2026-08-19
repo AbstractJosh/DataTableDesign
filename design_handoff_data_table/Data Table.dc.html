@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/modernist-2b882db5-a336-4b82-b895-040471b1d128/styles.css">
+<script src="_ds/modernist-2b882db5-a336-4b82-b895-040471b1d128/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { background: #f3f2f2; }
+  a { color: #1d2d46; text-decoration: none; }
+  a:hover { color: #ec3013; }
+  * { box-sizing: border-box; }
+  input, button { font-family: inherit; }
+  ::selection { background: #d7d3d3; }
+  @keyframes dtExpand { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 440px; } }
+  button:focus-visible, input:focus-visible, th:focus-visible { outline: 2px solid #1d2d46; outline-offset: 2px; }
+</style>
+</helmet>
+<div style="min-height:100vh;background:#f3f2f2;color:#201e1d;font-family:'Archivo',system-ui,sans-serif;padding:40px 48px 64px">
+  <div style="max-width:1400px;margin:0 auto">
+
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:32px;border-bottom:2px solid #201e1d;padding-bottom:18px">
+      <div>
+        <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#7d7979;font-weight:600;margin-bottom:10px">Records / Directory</div>
+        <h1 style="margin:0;font-size:44px;font-weight:800;letter-spacing:-0.025em;line-height:0.95">Data table</h1>
+      </div>
+      <div style="display:flex;gap:40px;padding-bottom:4px">
+        <div>
+          <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:600;margin-bottom:6px">Total</div>
+          <div style="font-size:22px;font-weight:700;line-height:1">{{ totalCount }}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:600;margin-bottom:6px">Matching</div>
+          <div style="font-size:22px;font-weight:700;line-height:1">{{ filteredCount }}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:600;margin-bottom:6px">Selected</div>
+          <div style="font-size:22px;font-weight:700;line-height:1">{{ selectedCount }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:stretch;gap:12px;padding:18px 0;flex-wrap:wrap">
+      <input type="text" placeholder="Search name, email or address" value="{{ query }}" onChange="{{ onQuery }}" style="flex:1 1 280px;max-width:380px;min-width:220px;padding:11px 13px;border:2px solid #201e1d;background:#f8f4f4;font-size:13px;font-weight:500;color:#201e1d;border-radius:0;outline:none">
+      <div style="display:flex;border:2px solid #201e1d;background:#f8f4f4" hint-placeholder-count="4">
+        <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+          <button type="button" onClick="{{ f.onPick }}" style="{{ f.style }}">{{ f.label }}</button>
+        </sc-for>
+      </div>
+      <div style="flex:1"></div>
+      <button type="button" onClick="{{ onClearSort }}" style="padding:11px 16px;border:2px solid #201e1d;background:transparent;color:#201e1d;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;text-align:left">Reset order</button>
+      <button type="button" title="New record" aria-label="New record" style="{{ primaryBtnStyle }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+      </button>
+    </div>
+
+    <sc-if value="{{ hasSelection }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ bulkBarStyle }}">
+        <div style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase">{{ selectedCount }} selected</div>
+        <div style="display:flex;gap:10px">
+          <button type="button" style="{{ bulkBtnStyle }}">Export</button>
+          <button type="button" style="{{ bulkBtnStyle }}">Archive</button>
+          <button type="button" onClick="{{ onDeleteSelected }}" style="{{ bulkBtnStyle }}">Delete</button>
+          <button type="button" onClick="{{ onClearSelection }}" style="{{ bulkBtnGhostStyle }}">Clear</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;min-width:1222px">
+        <thead>
+          <tr>
+            <th style="{{ headGripStyle }}">
+              <img src="uploads/Alp_Havacılık-1538940458.png" alt="ALP" style="height:32px;width:auto;display:block;margin:0 auto">
+            </th>
+            <th style="{{ headCheckStyle }}">
+              <button type="button" onClick="{{ onToggleAll }}" aria-pressed="{{ allSelected }}" aria-label="Select all rows" style="{{ headCheckboxStyle }}">
+                <sc-if value="{{ allSelected }}" hint-placeholder-val="{{ false }}">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"><path d="M20 6 9 17l-5-5"></path></svg>
+                </sc-if>
+              </button>
+            </th>
+            <sc-for list="{{ cols }}" as="col" hint-placeholder-count="6">
+              <th draggable="true" onDragStart="{{ col.onDragStart }}" onDragEnter="{{ col.onDragEnter }}" onDragOver="{{ col.onDragOver }}" onDragEnd="{{ col.onDragEnd }}" style="{{ col.thStyle }}">
+                <div style="display:flex;align-items:center;gap:7px;user-select:none">
+                  <span title="Drag to reorder column" style="cursor:grab;color:rgba(243,242,242,0.55);font-size:13px;line-height:1;letter-spacing:-2px">⠿</span>
+                  <span onClick="{{ col.onSort }}" style="cursor:pointer;white-space:nowrap">{{ col.label }}</span>
+                  <span style="{{ col.markStyle }}">{{ col.mark }}</span>
+                </div>
+              </th>
+            </sc-for>
+            <th style="{{ headActionStyle }}">Action</th>
+          </tr>
+        </thead>
+        <sc-for list="{{ rows }}" as="row" hint-placeholder-count="8">
+          <tbody>
+            <tr draggable="true" onDragStart="{{ row.onDragStart }}" onDragEnter="{{ row.onDragEnter }}" onDragOver="{{ row.onDragOver }}" onDragEnd="{{ row.onDragEnd }}" style="{{ row.trStyle }}">
+              <td style="{{ row.gripStyle }}">
+                <span title="Drag to reorder row" style="cursor:grab;color:#bab6b6;font-size:14px;line-height:1;letter-spacing:-2px">⠿</span>
+              </td>
+              <td style="{{ row.checkCellStyle }}">
+                <button type="button" onClick="{{ row.onSelect }}" aria-pressed="{{ row.selected }}" aria-label="Select row" style="{{ row.checkBoxStyle }}">
+                  <sc-if value="{{ row.selected }}" hint-placeholder-val="{{ false }}">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"><path d="M20 6 9 17l-5-5"></path></svg>
+                  </sc-if>
+                </button>
+              </td>
+              <sc-for list="{{ row.cells }}" as="cell" hint-placeholder-count="6">
+                <td style="{{ cell.tdStyle }}">
+                  <sc-if value="{{ cell.isPill }}" hint-placeholder-val="{{ false }}">
+                    <span style="{{ cell.pillStyle }}">{{ cell.text }}</span>
+                  </sc-if>
+                  <sc-if value="{{ cell.isName }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;align-items:center;gap:9px">
+                      <button type="button" onClick="{{ row.onExpand }}" aria-label="Toggle details" style="{{ row.chevronStyle }}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter" style="{{ row.chevronIconStyle }}"><path d="M6 9l6 6 6-6"></path></svg>
+                      </button>
+                      <span style="font-weight:700">{{ cell.text }}</span>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ cell.isText }}" hint-placeholder-val="{{ true }}">
+                    <span style="{{ cell.textStyle }}">{{ cell.text }}</span>
+                  </sc-if>
+                </td>
+              </sc-for>
+              <td style="{{ row.actionCellStyle }}">
+                <div style="display:flex;gap:8px">
+                  <button type="button" title="Edit record" aria-label="Edit record" style="{{ editBtnStyle }}">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+                  </button>
+                  <button type="button" onClick="{{ row.onDelete }}" title="Delete record" aria-label="Delete record" style="{{ deleteBtnStyle }}">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+            <sc-if value="{{ row.expanded }}" hint-placeholder-val="{{ false }}">
+              <tr>
+                <td colSpan="{{ colSpan }}" style="{{ detailCellStyle }}">
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#d7d3d3;border:1px solid #d7d3d3;overflow:hidden;animation:dtExpand 200ms ease-out">
+                    <div style="background:#f8f4f4;padding:16px 18px">
+                      <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:700;margin-bottom:8px">Record ID</div>
+                      <div style="font-size:14px;font-weight:600">{{ row.detail.id }}</div>
+                    </div>
+                    <div style="background:#f8f4f4;padding:16px 18px">
+                      <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:700;margin-bottom:8px">Owner</div>
+                      <div style="font-size:14px;font-weight:600">{{ row.detail.owner }}</div>
+                    </div>
+                    <div style="background:#f8f4f4;padding:16px 18px">
+                      <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:700;margin-bottom:8px">Last activity</div>
+                      <div style="font-size:14px;font-weight:600">{{ row.detail.activity }}</div>
+                    </div>
+                    <div style="background:#f8f4f4;padding:16px 18px">
+                      <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:700;margin-bottom:8px">Plan</div>
+                      <div style="font-size:14px;font-weight:600">{{ row.detail.plan }}</div>
+                    </div>
+                    <div style="background:#f8f4f4;padding:16px 18px;grid-column:span 4">
+                      <div style="font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#7d7979;font-weight:700;margin-bottom:8px">Note</div>
+                      <div style="font-size:14px;line-height:1.5;max-width:70ch;text-wrap:pretty">{{ row.detail.note }}</div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </sc-if>
+          </tbody>
+        </sc-for>
+      </table>
+    </div>
+
+    <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+      <div style="border-bottom:2px solid #201e1d;padding:56px 0;text-align:left">
+        <div style="font-size:16px;font-weight:700;margin-bottom:6px">No records match</div>
+        <div style="font-size:13px;color:#605d5d">Clear the search field or pick a different status filter.</div>
+      </div>
+    </sc-if>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding:18px 0 0;border-top:2px solid #201e1d;flex-wrap:wrap">
+      <div style="font-size:12px;color:#605d5d;font-weight:500">Showing <span style="color:#201e1d;font-weight:700">{{ rangeLabel }}</span> of {{ filteredCount }} entries</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button type="button" onClick="{{ onPrev }}" style="{{ pagerNavStyle }}">‹ Prev</button>
+        <sc-for list="{{ pages }}" as="p" hint-placeholder-count="5">
+          <button type="button" onClick="{{ p.onPick }}" style="{{ p.style }}">{{ p.label }}</button>
+        </sc-for>
+        <button type="button" onClick="{{ onNext }}" style="{{ pagerNavStyle }}">Next ›</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#1d2d46&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#1d2d46&quot;,&quot;#201e1d&quot;,&quot;#ec3013&quot;,&quot;#2f5d50&quot;],&quot;section&quot;:&quot;Theme&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;comfortable&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;rowsPerPage&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:8,&quot;min&quot;:4,&quot;max&quot;:16,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;zebraRows&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;}}">
+const NAMES = ["Ethan Noah","Amelia Hart","Marcus Reed","Priya Anand","Sofia Lindqvist","Daniel Osei","Clara Whitfield","Tomas Berger","Naomi Castillo","Owen Fletcher","Hana Sato","Julien Moreau","Ruth Abebe","Victor Ilyin","Mia Donnelly","Samir Haddad"];
+const STATUS = ["Success","In progress","Failed","Success","In progress","Success","Failed","In progress","Success","In progress","Success","Failed","In progress","Success","In progress","Success"];
+const CITIES = ["132 My Street, Kingston, New York 12401","41 Halsey Row, Newark, New Jersey 07102","8 Wren Court, Brookline, Massachusetts 02445","260 Bay Ridge, Brooklyn, New York 11209","17 Foundry Lane, Providence, Rhode Island 02903","903 Mesa Drive, Austin, Texas 78701","55 Kilburn Place, Chicago, Illinois 60614","19 Ashfield Way, Portland, Oregon 97205"];
+const PLANS = ["Standard","Professional","Exclusive","Free"];
+
+function slug(name) { return name.toLowerCase().replace(/[^a-z]+/g, ".").replace(/^\.|\.$/g, ""); }
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const data = NAMES.map((name, i) => ({
+      id: "REC-" + String(4820 + i * 7),
+      name,
+      date: ["04 March, 2026","10 March, 2026","18 March, 2026","02 April, 2026"][i % 4],
+      status: STATUS[i],
+      mobile: "+1 " + (200 + i) + " 0" + (40 + i) + " " + (1000 + i * 37),
+      email: slug(name) + "@xyz.com",
+      address: CITIES[i % CITIES.length],
+      owner: NAMES[(i + 5) % NAMES.length],
+      activity: ["2 hours ago","Yesterday","3 days ago","Last week"][i % 4],
+      plan: PLANS[i % PLANS.length],
+      note: "Imported from the March intake batch. Verification pending on the billing address; contact prefers email over phone."
+    }));
+    this.state = {
+      data,
+      cols: ["name","date","status","mobile","email","address"],
+      selected: {},
+      expanded: {},
+      sort: null,
+      query: "",
+      filter: "All",
+      page: 0
+    };
+    this.dragRow = null;
+    this.dragCol = null;
+  }
+
+  labelFor(key) {
+    return { name: "Name", date: "Date", status: "Status", mobile: "Mobile no", email: "Email ID", address: "Address" }[key];
+  }
+  widthFor(key) {
+    return { name: "200px", date: "140px", status: "140px", mobile: "170px", email: "210px", address: "300px" }[key];
+  }
+
+  moveRow(fromId, toId) {
+    if (fromId === toId) return;
+    this.setState(s => {
+      const data = s.data.slice();
+      const from = data.findIndex(r => r.id === fromId);
+      const to = data.findIndex(r => r.id === toId);
+      if (from < 0 || to < 0) return null;
+      data.splice(to, 0, data.splice(from, 1)[0]);
+      return { data, sort: null };
+    });
+  }
+  moveCol(fromKey, toKey) {
+    if (fromKey === toKey) return;
+    this.setState(s => {
+      const cols = s.cols.slice();
+      const from = cols.indexOf(fromKey);
+      const to = cols.indexOf(toKey);
+      if (from < 0 || to < 0) return null;
+      cols.splice(to, 0, cols.splice(from, 1)[0]);
+      return { cols };
+    });
+  }
+
+  renderVals() {
+    const accent = this.props.accentColor ?? "#1d2d46";
+    const density = this.props.density ?? "comfortable";
+    const perPage = this.props.rowsPerPage ?? 8;
+    const zebra = this.props.zebraRows ?? false;
+    const padY = density === "compact" ? 9 : 15;
+    const ink = "#201e1d";
+    const muted = "#605d5d";
+    const rule = "1px solid #d7d3d3";
+
+    const q = this.state.query.trim().toLowerCase();
+    let filtered = this.state.data.filter(r => {
+      if (this.state.filter !== "All" && r.status !== this.state.filter) return false;
+      if (!q) return true;
+      return (r.name + " " + r.email + " " + r.address + " " + r.mobile).toLowerCase().includes(q);
+    });
+    if (this.state.sort) {
+      const { key, dir } = this.state.sort;
+      filtered = filtered.slice().sort((a, b) => String(a[key]).localeCompare(String(b[key])) * (dir === "asc" ? 1 : -1));
+    }
+    const pageCount = Math.max(1, Math.ceil(filtered.length / perPage));
+    const page = Math.min(this.state.page, pageCount - 1);
+    const start = page * perPage;
+    const visible = filtered.slice(start, start + perPage);
+    const selectedCount = Object.keys(this.state.selected).filter(k => this.state.selected[k]).length;
+
+    const headBase = { padding: "12px 12px", borderBottom: "2px solid " + accent, textAlign: "left", fontSize: "10px", fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", color: "#f3f2f2", background: accent, borderRight: "2px solid rgba(243,242,242,0.35)" };
+
+    const cols = this.state.cols.map(key => {
+      const active = this.state.sort && this.state.sort.key === key;
+      return {
+        key,
+        label: this.labelFor(key),
+        mark: "▼",
+        markStyle: { fontSize: "8px", color: active ? "#f3f2f2" : "rgba(243,242,242,0.45)", lineHeight: 1, display: "inline-block", transition: "transform 180ms ease, color 180ms ease", transform: active && this.state.sort.dir === "asc" ? "rotate(180deg)" : "rotate(0deg)" },
+        thStyle: Object.assign({}, headBase, { width: this.widthFor(key), opacity: active ? 1 : 0.92, cursor: "default" }),
+        onSort: () => this.setState(s => ({ sort: s.sort && s.sort.key === key ? (s.sort.dir === "asc" ? { key, dir: "desc" } : null) : { key, dir: "asc" } })),
+        onDragStart: e => { this.dragCol = key; e.dataTransfer.effectAllowed = "move"; },
+        onDragEnter: () => { if (this.dragCol) this.moveCol(this.dragCol, key); },
+        onDragOver: e => e.preventDefault(),
+        onDragEnd: () => { this.dragCol = null; }
+      };
+    });
+
+    const pill = status => {
+      const map = {
+        "Success": { color: "#2f7d4f", border: "#2f7d4f" },
+        "In progress": { color: "#605d5d", border: "#9b9797" },
+        "Failed": { color: "#ec3013", border: "#ec3013" }
+      }[status];
+      return { display: "inline-block", padding: "4px 9px", border: "2px solid " + map.border, color: map.color, fontSize: "10px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap" };
+    };
+
+    const rows = visible.map((r, i) => {
+      const selected = !!this.state.selected[r.id];
+      const expanded = !!this.state.expanded[r.id];
+      const bg = selected ? "#eae9e9" : (zebra && i % 2 === 1 ? "#f8f4f4" : "transparent");
+      const cellBase = { padding: padY + "px 12px", borderBottom: expanded ? "none" : rule, verticalAlign: "middle" };
+      return {
+        id: r.id,
+        selected,
+        expanded,
+        chevronStyle: { width: "18px", height: "18px", flex: "0 0 18px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "transparent", color: expanded ? accent : ink, padding: 0, cursor: "pointer" },
+        chevronIconStyle: { display: "block", transition: "transform 180ms ease", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" },
+        trStyle: { background: bg, borderLeft: selected ? "3px solid " + accent : "3px solid transparent" },
+        gripStyle: Object.assign({}, cellBase, { padding: padY + "px 10px", textAlign: "center" }),
+        checkCellStyle: Object.assign({}, cellBase, { padding: padY + "px 8px", textAlign: "center" }),
+        checkBoxStyle: { width: "22px", height: "22px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: "2.5px solid " + (selected ? accent : "#9b9797"), background: "transparent", padding: 0, color: accent, cursor: "pointer" },
+        actionCellStyle: Object.assign({}, cellBase, { padding: padY + "px 16px " + padY + "px 12px" }),
+        cells: this.state.cols.map(key => ({
+          isPill: key === "status",
+          isName: key === "name",
+          isText: key !== "status" && key !== "name",
+          text: r[key],
+          pillStyle: key === "status" ? pill(r.status) : null,
+          textStyle: { color: key === "address" || key === "email" ? muted : ink, fontWeight: 500, fontVariantNumeric: "tabular-nums" },
+          tdStyle: cellBase
+        })),
+        detail: { id: r.id, owner: r.owner, activity: r.activity, plan: r.plan, note: r.note },
+        onSelect: () => this.setState(s => ({ selected: Object.assign({}, s.selected, { [r.id]: !s.selected[r.id] }) })),
+        onExpand: () => this.setState(s => ({ expanded: Object.assign({}, s.expanded, { [r.id]: !s.expanded[r.id] }) })),
+        onDelete: () => this.setState(s => ({ data: s.data.filter(x => x.id !== r.id) })),
+        onDragStart: e => { this.dragRow = r.id; e.dataTransfer.effectAllowed = "move"; },
+        onDragEnter: () => { if (this.dragRow) this.moveRow(this.dragRow, r.id); },
+        onDragOver: e => e.preventDefault(),
+        onDragEnd: () => { this.dragRow = null; }
+      };
+    });
+
+    const filterStyle = active => ({
+      padding: "11px 14px",
+      border: "none",
+      borderRight: "2px solid " + ink,
+      background: active ? accent : "transparent",
+      color: active ? "#f3f2f2" : ink,
+      fontSize: "11px",
+      fontWeight: 700,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      cursor: "pointer"
+    });
+
+    const pageBtn = active => ({
+      minWidth: "34px",
+      height: "34px",
+      border: "2px solid " + (active ? accent : "#bab6b6"),
+      background: active ? accent : "transparent",
+      color: active ? "#f3f2f2" : ink,
+      fontSize: "12px",
+      fontWeight: 700,
+      cursor: "pointer",
+      padding: "0 8px"
+    });
+
+    return {
+      totalCount: this.state.data.length,
+      filteredCount: filtered.length,
+      selectedCount,
+      hasSelection: selectedCount > 0,
+      isEmpty: visible.length === 0,
+      colSpan: this.state.cols.length + 3,
+      query: this.state.query,
+      cols,
+      rows,
+      allSelected: visible.length > 0 && visible.every(r => this.state.selected[r.id]),
+      checkboxStyle: { width: "15px", height: "15px", accentColor: accent, cursor: "pointer", margin: 0 },
+      headGripStyle: Object.assign({}, headBase, { width: "56px", padding: "8px 10px", textAlign: "center" }),
+      headCheckStyle: Object.assign({}, headBase, { width: "56px", padding: "12px 8px", textAlign: "center" }),
+      headCheckboxStyle: { width: "22px", height: "22px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: "2.5px solid rgba(243,242,242,0.8)", background: "transparent", padding: 0, color: "#f3f2f2", cursor: "pointer" },
+      headActionStyle: Object.assign({}, headBase, { width: "130px", padding: "12px 16px 12px 12px", borderRight: "none" }),
+      onQuery: e => this.setState({ query: e.target.value, page: 0 }),
+      onClearSort: () => this.setState({ sort: null, cols: ["name", "date", "status", "mobile", "email", "address"] }),
+      onToggleAll: () => {
+        const all = visible.length > 0 && visible.every(r => this.state.selected[r.id]);
+        this.setState(s => {
+          const sel = Object.assign({}, s.selected);
+          visible.forEach(r => { sel[r.id] = !all; });
+          return { selected: sel };
+        });
+      },
+      onClearSelection: () => this.setState({ selected: {} }),
+      onDeleteSelected: () => this.setState(s => ({ data: s.data.filter(r => !s.selected[r.id]), selected: {} })),
+      filters: ["All", "Success", "In progress", "Failed"].map(label => ({
+        label,
+        style: filterStyle(this.state.filter === label),
+        onPick: () => this.setState({ filter: label, page: 0 })
+      })),
+      primaryBtnStyle: { width: "42px", flex: "0 0 42px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: "2px solid " + accent, background: accent, color: "#f3f2f2", padding: 0, cursor: "pointer" },
+      bulkBarStyle: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", background: accent, color: "#f3f2f2", padding: "12px 16px", marginBottom: "0" },
+      bulkBtnStyle: { padding: "7px 12px", border: "2px solid #f3f2f2", background: "transparent", color: "#f3f2f2", fontSize: "10px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer" },
+      bulkBtnGhostStyle: { padding: "7px 12px", border: "2px solid transparent", background: "transparent", color: "#f3f2f2", fontSize: "10px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", opacity: 0.7 },
+      editBtnStyle: { width: "30px", height: "30px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: "2px solid " + accent, background: "transparent", padding: 0, color: accent, cursor: "pointer" },
+      deleteBtnStyle: { width: "30px", height: "30px", display: "inline-flex", alignItems: "center", justifyContent: "center", border: "2px solid #ec3013", background: "transparent", padding: 0, color: "#ec3013", cursor: "pointer" },
+      detailCellStyle: { padding: "0 12px 18px 46px", borderBottom: rule, background: "#eae9e9" },
+      rangeLabel: filtered.length === 0 ? "0" : (start + 1) + "–" + Math.min(start + perPage, filtered.length),
+      pages: Array.from({ length: pageCount }, (_, i) => ({
+        label: String(i + 1),
+        style: pageBtn(i === page),
+        onPick: () => this.setState({ page: i })
+      })),
+      pagerNavStyle: { height: "34px", padding: "0 12px", border: "2px solid #bab6b6", background: "transparent", color: muted, fontSize: "11px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer" },
+      onPrev: () => this.setState(s => ({ page: Math.max(0, s.page - 1) })),
+      onNext: () => this.setState({ page: Math.min(pageCount - 1, page + 1) })
+    };
+  }
+}
+</script>
+</body>
+</html>
