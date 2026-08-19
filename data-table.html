@@ -178,6 +178,7 @@
   tbody.confirming > tr:first-child {
     background: color-mix(in srgb, var(--danger) 8%, var(--ground));
   }
+  tbody.draft > tr { background: color-mix(in srgb, var(--accent) 6%, var(--ground)); }
   td {
     padding: var(--cell-pad-y) 12px;
     border-bottom: 1px solid var(--n300);
@@ -224,6 +225,9 @@
   /* delete confirmation, in place of the two action buttons */
   .icon-btn.confirm { background: var(--danger); border-color: var(--danger); color: var(--reversed); }
   .icon-btn.cancel  { color: var(--ink); border-color: var(--ink); }
+  /* the draft row's save reuses the confirm shape in accent, not red:
+     red is this system's destructive-only signal */
+  .icon-btn.save { background: var(--accent); border-color: var(--accent); color: var(--reversed); }
 
   /* ---- inline edit: pick a field, then edit it ---- */
   .pick {
@@ -237,13 +241,15 @@
     outline: 2px solid var(--accent);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
-  .cell-input {
+  .cell-input, .draft-input {
     width: 100%; padding: 5px 7px;
     border: 2px solid var(--accent); border-radius: 0;
     background: var(--n100); color: var(--ink);
     font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums;
     outline: none;
   }
+  .draft-input::placeholder { color: var(--n500); font-weight: 500; }
+  .draft-input.invalid { border-color: var(--danger); }
   .status-pick {
     display: inline-flex; flex-direction: column;
     border: 2px solid var(--accent); background: var(--n100);
@@ -340,7 +346,7 @@
     <div class="seg" id="filters" role="group" aria-label="Status filter"></div>
     <div class="spacer"></div>
     <button type="button" class="btn-secondary" id="resetOrder">Reset order</button>
-    <button type="button" class="btn-primary" title="New record" aria-label="New record">
+    <button type="button" class="btn-primary" id="newRecord" title="New record" aria-label="New record">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
     </button>
   </div>
@@ -464,10 +470,14 @@
     picking: null,         // record id whose fields are armed for editing
     editing: null,         // { id, key } — the field currently open in an editor
     confirmRow: null,      // record id whose delete is awaiting confirmation
-    confirmBulk: false     // the bulk delete is awaiting confirmation
+    confirmBulk: false,    // the bulk delete is awaiting confirmation
+    draft: null            // the unsaved new record pinned above the page
   };
 
   const STATUSES = ["Success", "In progress", "Failed"];
+  const DRAFT_ID = "__draft__";
+  const MONTHS = ["January","February","March","April","May","June",
+                  "July","August","September","October","November","December"];
 
   // Held off state so dragging never triggers a render on its own.
   let dragRow = null;
@@ -578,15 +588,17 @@
 
   /* The open editor for one field: a three-way picker for status (an enum
      that drives the pill colors), a plain text box for everything else. */
+  function statusPickHtml(current) {
+    return '<div class="status-pick" role="group" aria-label="Edit status">' +
+      STATUSES.map(s =>
+        '<button type="button" class="' + (s === current ? "on" : "") + '" ' +
+          'data-act="setstatus" data-value="' + esc(s) + '">' + esc(s) + '</button>'
+      ).join("") +
+    '</div>';
+  }
+
   function editorHtml(rec, key) {
-    if (key === "status") {
-      return '<div class="status-pick" role="group" aria-label="Edit status">' +
-        STATUSES.map(s =>
-          '<button type="button" class="' + (s === rec.status ? "on" : "") + '" ' +
-            'data-act="setstatus" data-value="' + esc(s) + '">' + esc(s) + '</button>'
-        ).join("") +
-      '</div>';
-    }
+    if (key === "status") return statusPickHtml(rec.status);
     return '<input class="cell-input" type="text" ' +
       'data-id="' + esc(rec.id) + '" data-key="' + key + '" ' +
       'value="' + esc(rec[key]) + '" aria-label="Edit ' + esc(LABELS[key]) + '">';
@@ -638,6 +650,112 @@
              (armed ? ICON.done : ICON.pencil) + '</button>' +
            '<button type="button" class="icon-btn del" data-act="delete" ' +
              'title="Delete record" aria-label="Delete record">' + ICON.trash + '</button>';
+  }
+
+  /* ---- the draft row ------------------------------------------------ *
+   * A new record lives outside state.data until it is saved, so filtering
+   * and sorting can never carry it off mid-typing. It is pinned above the
+   * page rows and confirmed with the same check/cross pair as a delete.
+   * ------------------------------------------------------------------ */
+  const draftBody = document.createElement("tbody");
+  draftBody.className = "draft";
+  draftBody.dataset.id = DRAFT_ID;
+  let focusDraft = false;
+
+  function todayLabel() {
+    const d = new Date();
+    return String(d.getDate()).padStart(2, "0") + " " + MONTHS[d.getMonth()] + ", " + d.getFullYear();
+  }
+
+  function nextId() {
+    const nums = state.data
+      .map(r => parseInt(String(r.id).replace(/\D/g, ""), 10))
+      .filter(n => !isNaN(n));
+    return "REC-" + ((nums.length ? Math.max.apply(null, nums) : 4813) + 7);
+  }
+
+  // The inputs are uncontrolled, so read them back before anything repaints.
+  function syncDraft() {
+    if (!state.draft || !draftBody.isConnected) return;
+    draftBody.querySelectorAll(".draft-input").forEach(input => {
+      state.draft[input.dataset.key] = input.value;
+    });
+  }
+
+  function paintDraft() {
+    const d = state.draft;
+    const pickingStatus = state.editing &&
+      state.editing.id === DRAFT_ID && state.editing.key === "status";
+
+    const cells = state.cols.map(key => {
+      if (key === "status") {
+        return '<td>' + (pickingStatus
+          ? statusPickHtml(d.status)
+          : '<button type="button" class="pick" data-act="pickcell" data-key="status" ' +
+              'title="Set status"><span class="pill ' + PILL_CLASS[d.status] + '">' +
+              esc(d.status) + '</span></button>') + '</td>';
+      }
+      return '<td><input class="draft-input" type="text" data-key="' + key + '" ' +
+        'value="' + esc(d[key]) + '" placeholder="' + esc(LABELS[key]) + '" ' +
+        'aria-label="' + esc(LABELS[key]) + '"></td>';
+    }).join("");
+
+    draftBody.innerHTML =
+      '<tr>' +
+        '<td class="cell-grip"></td>' +
+        '<td class="cell-check"></td>' +
+        cells +
+        '<td class="cell-action"><div class="row-actions">' +
+          '<button type="button" class="icon-btn save" data-act="savedraft" ' +
+            'title="Save record" aria-label="Save record">' + ICON.done + '</button>' +
+          '<button type="button" class="icon-btn cancel" data-act="canceldraft" ' +
+            'title="Discard record" aria-label="Discard record">' + ICON.cross + '</button>' +
+        '</div></td>' +
+      '</tr>';
+  }
+
+  function startDraft() {
+    if (state.draft) { focusDraft = true; return render(); }
+    clearEditing();
+    state.draft = {
+      name: "", date: todayLabel(), status: "In progress",
+      mobile: "", email: "", address: ""
+    };
+    state.page = 0;
+    focusDraft = true;
+    render();
+  }
+
+  function saveDraft() {
+    syncDraft();
+    const d = state.draft;
+    if (!d) return;
+
+    const name = (d.name || "").trim();
+    if (!name) {                       // the row needs an identity; the rest may wait
+      render();
+      const input = draftBody.querySelector('.draft-input[data-key="name"]');
+      if (input) { input.classList.add("invalid"); input.focus(); }
+      return;
+    }
+
+    state.data.unshift({
+      id: nextId(),
+      name,
+      date: (d.date || "").trim(),
+      status: d.status,
+      mobile: (d.mobile || "").trim(),
+      email: (d.email || "").trim(),
+      address: (d.address || "").trim(),
+      owner: "Unassigned",
+      activity: "Just now",
+      plan: "Standard",
+      note: ""
+    });
+    state.draft = null;
+    state.editing = null;
+    state.page = 0;
+    render();
   }
 
   function paintRow(tb, rec, index) {
@@ -721,6 +839,7 @@
    * Render — ... -> paginate -> slice to the visible page.
    * ------------------------------------------------------------------ */
   function render() {
+    syncDraft();                       // capture typing before anything repaints
     const filtered = derive();
 
     const perPage = CONFIG.rowsPerPage;
@@ -764,6 +883,14 @@
     sa.setAttribute("aria-pressed", String(allSelected));
     sa.innerHTML = allSelected ? ICON.check : "";
 
+    /* draft row first, so it sits above the page */
+    if (state.draft) {
+      paintDraft();
+      table.appendChild(draftBody);
+    } else if (draftBody.parentNode) {
+      draftBody.parentNode.removeChild(draftBody);
+    }
+
     /* body — reorder existing tbodies, detach the ones off-page */
     const keep = new Set(visible.map(r => r.id));
     bodyCache.forEach((tb, id) => {
@@ -775,8 +902,8 @@
       table.appendChild(tb);
     });
 
-    /* empty state */
-    $("empty").hidden = visible.length !== 0;
+    /* empty state — a draft row still counts as something on screen */
+    $("empty").hidden = visible.length !== 0 || !!state.draft;
 
     /* footer */
     $("range").textContent = filtered.length === 0
@@ -803,6 +930,13 @@
     if (input && document.activeElement !== input) {
       input.focus();
       input.select();
+    }
+
+    /* a freshly opened draft starts in its first field */
+    if (state.draft && focusDraft) {
+      focusDraft = false;
+      const first = draftBody.querySelector(".draft-input");
+      if (first) first.focus();
     }
   }
 
@@ -859,10 +993,15 @@
       state.editing = { id, key: trigger.dataset.key };
     }
     else if (act === "setstatus") {
-      const rec = state.data.find(r => r.id === id);
-      if (rec) rec.status = trigger.dataset.value;
+      if (id === DRAFT_ID) state.draft.status = trigger.dataset.value;
+      else {
+        const rec = state.data.find(r => r.id === id);
+        if (rec) rec.status = trigger.dataset.value;
+      }
       state.editing = null;          // back to picking, so another field can follow
     }
+    else if (act === "savedraft") return saveDraft();
+    else if (act === "canceldraft") state.draft = null;
     render();
   });
 
@@ -906,7 +1045,7 @@
   // to another swallows the second click.
   document.addEventListener("mousedown", e => {
     if (!state.editing || !(e.target instanceof Element)) return;
-    if (e.target.closest(".cell-input, .status-pick")) return;   // inside the editor
+    if (e.target.closest(".cell-input, .draft-input, .status-pick")) return;  // inside an editor
 
     const actionable = e.target.closest("[data-act]");
     if (actionable && table.contains(actionable)) {
@@ -920,7 +1059,11 @@
 
   // Keyboard exits: Enter commits, Escape backs out one level at a time.
   document.addEventListener("keydown", e => {
-    if (e.key === "Enter" && e.target.classList && e.target.classList.contains("cell-input")) {
+    const cls = e.target.classList;
+    if (e.key === "Enter" && cls && cls.contains("draft-input")) {
+      e.preventDefault();
+      saveDraft();
+    } else if (e.key === "Enter" && cls && cls.contains("cell-input")) {
       e.preventDefault();
       commitEdit();
       render();
@@ -931,6 +1074,7 @@
         render();
       }
       else if (state.editing) { state.editing = null; render(); }
+      else if (state.draft) { state.draft = null; render(); }
       else if (state.picking) { state.picking = null; render(); }
     }
   });
@@ -998,6 +1142,8 @@
     clearEditing();
     render();
   });
+
+  $("newRecord").addEventListener("click", startDraft);
 
   $("resetOrder").addEventListener("click", () => {
     state.sort = null;
