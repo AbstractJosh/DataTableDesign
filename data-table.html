@@ -477,7 +477,21 @@
 
   const slug = name => name.toLowerCase().replace(/[^a-z]+/g, ".").replace(/^\.|\.$/g, "");
 
-  const makeData = () => NAMES.map((name, i) => ({
+  // Built fresh on each call rather than shared: records are mutated in place
+  // by inline editing, and a shared literal would carry edits across a reset.
+  const makeData = () => [{
+    id: "REC-4813",
+    name: "Tunc Yanik",
+    date: "19 August, 2026",
+    status: "Success",
+    mobile: "+1 111 111 1111",
+    email: "tyanik@yopmail.com",
+    address: "456 Boss Street, Yenimahalle, Eskisehir 15305",
+    owner: "Amelia Hart",
+    activity: "2 hours ago",
+    plan: "Exclusive",
+    note: "Imported from the March intake batch. Verification pending on the billing address; contact prefers email over phone."
+  }].concat(NAMES.map((name, i) => ({
     id: "REC-" + (4820 + i * 7),
     name,
     date: DATES[i % 4],
@@ -489,7 +503,7 @@
     activity: ACTIVITY[i % 4],
     plan: PLANS[i % PLANS.length],
     note: "Imported from the March intake batch. Verification pending on the billing address; contact prefers email over phone."
-  }));
+  })));
 
   const DEFAULT_COLS = ["name", "date", "status", "mobile", "email", "address"];
   const LABELS = { name: "Name", date: "Date", status: "Status", mobile: "Mobile no", email: "Email ID", address: "Address" };
