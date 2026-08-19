@@ -87,14 +87,25 @@
     background: var(--n100); color: var(--ink);
     font-size: 13px; font-weight: 500; outline: none;
   }
-  .seg { display: flex; border: 2px solid var(--ink); background: var(--n100); }
+  /* A four-position switch: one selector slides between the options rather
+     than each option painting its own background. */
+  .seg { position: relative; display: flex; border: 2px solid var(--ink); background: var(--n100); }
+  .seg-thumb {
+    position: absolute; top: 0; bottom: 0; left: 0; width: 0;
+    background: var(--accent); pointer-events: none;
+    transition: transform 260ms cubic-bezier(.2,.7,.3,1),
+                width     260ms cubic-bezier(.2,.7,.3,1);
+  }
+  .seg-thumb.no-anim { transition: none; }
   .seg-opt {
+    position: relative; z-index: 1;          /* label rides above the selector */
     padding: 11px 14px; border: none; border-right: 2px solid var(--ink);
     background: transparent; color: var(--ink);
     font-size: 11px; font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; cursor: pointer;
+    transition: color 160ms ease;
   }
-  .seg-opt[aria-pressed="true"] { background: var(--accent); color: var(--reversed); }
+  .seg-opt[aria-pressed="true"] { color: var(--reversed); }
   .spacer { flex: 1; }
   .btn-secondary {
     padding: 11px 16px; border: 2px solid var(--ink); background: transparent;
@@ -319,7 +330,7 @@
      own animationend, which `animation: none` would never fire. */
   @media (prefers-reduced-motion: reduce) {
     .detail-grid.entering, .detail-grid.collapsing { animation-duration: 1ms; }
-    .chevron svg, .caret { transition-duration: 1ms; }
+    .chevron svg, .caret, .seg-thumb, .seg-opt { transition-duration: 1ms; }
   }
 </style>
 </head>
@@ -524,6 +535,12 @@
   /* ------------------------------------------------------------------ *
    * Segmented status filter (static)
    * ------------------------------------------------------------------ */
+  let thumbPlaced = false;
+  const segEl = $("filters");
+  const segThumb = document.createElement("span");
+  segThumb.className = "seg-thumb no-anim";
+  segEl.appendChild(segThumb);
+
   const filterBtns = FILTERS.map(f => {
     const b = document.createElement("button");
     b.type = "button";
@@ -536,9 +553,35 @@
       clearEditing();
       render();
     });
-    $("filters").appendChild(b);
+    segEl.appendChild(b);
     return b;
   });
+
+  /* Measured from rects rather than offsetLeft: the selector is positioned
+     against the padding box while offsetLeft is reported against the border
+     box, and .seg carries a 2px border. clientLeft is that border width. */
+  function positionThumb(animate) {
+    const active = filterBtns[FILTERS.indexOf(state.filter)];
+    if (!active) return;
+    const box = active.getBoundingClientRect();
+    if (!box.width) return;                    // laid out yet?
+    const x = box.left - segEl.getBoundingClientRect().left - segEl.clientLeft;
+
+    if (!animate) segThumb.classList.add("no-anim");
+    segThumb.style.width = box.width + "px";
+    segThumb.style.transform = "translateX(" + x + "px)";
+    if (!animate) {
+      void segThumb.offsetWidth;               // flush before motion is re-armed
+      segThumb.classList.remove("no-anim");
+    }
+  }
+
+  // Option widths depend on the webfont and on where the toolbar wraps, so
+  // re-measure on both — silently, without sliding the selector.
+  window.addEventListener("resize", () => positionThumb(false));
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => positionThumb(false));
+  }
 
   /* ------------------------------------------------------------------ *
    * Reorder helpers
@@ -944,8 +987,10 @@
     $("statMatching").textContent = filtered.length;
     $("statSelected").textContent = selectedCount;
 
-    /* status filter */
+    /* status filter — the selector slides to the pressed option */
     filterBtns.forEach((b, i) => b.setAttribute("aria-pressed", String(FILTERS[i] === state.filter)));
+    positionThumb(thumbPlaced);
+    thumbPlaced = true;                        // first placement never slides
 
     /* selection actions — greyed out with nothing selected. They keep their
        place in the toolbar either way, so the table never shifts. */
