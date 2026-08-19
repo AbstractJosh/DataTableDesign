@@ -54,13 +54,6 @@
     to   { opacity: 0; max-height: 0; }
   }
 
-  /* Animations must still *end* under reduced motion — the collapsing detail
-     row is unmounted by its animationend event. Shorten, never disable. */
-  @media (prefers-reduced-motion: reduce) {
-    .detail-grid.entering, .detail-grid.collapsing { animation-duration: 1ms; }
-    .chevron svg, .caret { transition-duration: 1ms; }
-  }
-
   .shell { max-width: 1400px; margin: 0 auto; }
 
   /* ---- 1. Page header ---- */
@@ -162,6 +155,10 @@
     color: rgba(243, 242, 242, .55);
   }
   .th-label { cursor: pointer; white-space: nowrap; }
+  .grip:active, .row-grip:active { cursor: grabbing; }
+  /* the element under the cursor, hollowed out while it is being moved */
+  tbody.dragging > tr > td { opacity: .4; }
+  th.col-data.dragging { opacity: .5; }
   .caret {
     font-size: 8px; line-height: 1; display: inline-block;
     color: rgba(243, 242, 242, .45);
@@ -333,6 +330,15 @@
   }
 
   [hidden] { display: none !important; }
+
+  /* Must come last: these override the `animation` / `transition` shorthands
+     above at equal specificity, so source order decides. Animations are
+     shortened rather than disabled — the collapsing pane is unmounted by its
+     own animationend, which `animation: none` would never fire. */
+  @media (prefers-reduced-motion: reduce) {
+    .detail-grid.entering, .detail-grid.collapsing { animation-duration: 1ms; }
+    .chevron svg, .caret { transition-duration: 1ms; }
+  }
 </style>
 </head>
 <body>
@@ -565,14 +571,83 @@
   /* ------------------------------------------------------------------ *
    * Reorder helpers
    * ------------------------------------------------------------------ */
+  /* ---- FLIP reordering ---------------------------------------------- *
+   * A reorder splices the array and repaints, which lands every row in its
+   * new place instantly. FLIP measures where things were, puts them back
+   * with a transform, then lets that transform animate away — so the jump
+   * plays as a slide without the layout ever being faked.
+   * ------------------------------------------------------------------ */
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  function snapshotRows() {
+    const seen = new Map();
+    bodyCache.forEach((tb, id) => {
+      if (tb.isConnected) seen.set(id, tb.getBoundingClientRect().top);
+    });
+    return seen;
+  }
+
+  function snapshotCols() {
+    const seen = new Map();
+    thCache.forEach((th, key) => {
+      if (th.isConnected) seen.set(key, th.getBoundingClientRect().left);
+    });
+    return seen;
+  }
+
+  // `pairs` is [element, distance it appears to have travelled].
+  function play(pairs, axis) {
+    const moved = pairs.filter(p => Math.abs(p[1]) > 0.5);
+    if (!moved.length) return;
+    moved.forEach(([el, delta]) => {
+      el.style.transition = "none";
+      el.style.transform = "translate" + axis + "(" + delta + "px)";
+    });
+    void table.offsetHeight;                 // flush before the transition goes on
+    requestAnimationFrame(() => {
+      moved.forEach(([el]) => {
+        el.style.transition = "transform 200ms cubic-bezier(.2,.7,.3,1)";
+        el.style.transform = "";
+      });
+    });
+  }
+
+  function flipRows(first) {
+    if (reduceMotion.matches) return;
+    const pairs = [];
+    bodyCache.forEach((tb, id) => {
+      if (!tb.isConnected || !first.has(id)) return;
+      pairs.push([tb, first.get(id) - tb.getBoundingClientRect().top]);
+    });
+    play(pairs, "Y");
+  }
+
+  function flipCols(first) {
+    if (reduceMotion.matches) return;
+    const pairs = [];
+    thCache.forEach((th, key) => {
+      if (!th.isConnected || !first.has(key)) return;
+      const delta = first.get(key) - th.getBoundingClientRect().left;
+      if (Math.abs(delta) <= 0.5) return;
+      // the header and every cell beneath it travel together
+      pairs.push([th, delta]);
+      table.querySelectorAll('td[data-key="' + key + '"]').forEach(td => {
+        pairs.push([td, delta]);
+      });
+    });
+    play(pairs, "X");
+  }
+
   function moveRow(fromId, toId) {
     if (fromId === toId) return;
     const from = state.data.findIndex(r => r.id === fromId);
     const to = state.data.findIndex(r => r.id === toId);
     if (from < 0 || to < 0) return;
+    const first = snapshotRows();
     state.data.splice(to, 0, state.data.splice(from, 1)[0]);
     state.sort = null;                       // reordering clears any active sort
     render();
+    flipRows(first);
   }
 
   function moveCol(fromKey, toKey) {
@@ -580,8 +655,10 @@
     const from = state.cols.indexOf(fromKey);
     const to = state.cols.indexOf(toKey);
     if (from < 0 || to < 0) return;
+    const first = snapshotCols();
     state.cols.splice(to, 0, state.cols.splice(from, 1)[0]);
     render();
+    flipCols(first);
   }
 
   /* ------------------------------------------------------------------ *
@@ -720,13 +797,13 @@
 
     const cells = state.cols.map(key => {
       if (key === "status") {
-        return '<td>' + (pickingStatus
+        return '<td data-key="status">' + (pickingStatus
           ? statusPickHtml(d.status)
           : '<button type="button" class="pick" data-act="pickcell" data-key="status" ' +
               'title="Set status"><span class="pill ' + PILL_CLASS[d.status] + '">' +
               esc(d.status) + '</span></button>') + '</td>';
       }
-      return '<td><input class="draft-input" type="text" data-key="' + key + '" ' +
+      return '<td data-key="' + key + '"><input class="draft-input" type="text" data-key="' + key + '" ' +
         'value="' + esc(d[key]) + '" placeholder="' + esc(LABELS[key]) + '" ' +
         'aria-label="' + esc(LABELS[key]) + '"></td>';
     }).join("");
@@ -801,8 +878,11 @@
     tb.classList.toggle("zebra-odd", CONFIG.zebraRows && index % 2 === 1);
     tb.classList.toggle("picking", armed);
     tb.classList.toggle("confirming", state.confirmRow === rec.id);
+    tb.classList.toggle("dragging", dragRow === rec.id);
 
-    const cells = state.cols.map(key => '<td>' + cellHtml(rec, key) + '</td>').join("");
+    const cells = state.cols
+      .map(key => '<td data-key="' + key + '">' + cellHtml(rec, key) + '</td>')
+      .join("");
 
     // An armed row is not draggable: a draggable ancestor hijacks the
     // click-and-drag that selects text inside the open editor.
@@ -908,6 +988,7 @@
       const th = getTh(key);
       const active = state.sort && state.sort.key === key;
       th.classList.toggle("is-sorted", !!active);
+      th.classList.toggle("dragging", dragCol === key);
       const caret = th.querySelector(".caret");
       caret.classList.toggle("asc", !!active && state.sort.dir === "asc");
       headRow.insertBefore(th, actionTh);
@@ -1216,9 +1297,18 @@
   /* drag: rows and columns share one handler set */
   table.addEventListener("dragstart", e => {
     const th = e.target.closest("th[data-key]");
-    if (th) { dragCol = th.dataset.key; e.dataTransfer.effectAllowed = "move"; return; }
+    if (th) {
+      dragCol = th.dataset.key;
+      th.classList.add("dragging");          // immediate, without waiting for a render
+      e.dataTransfer.effectAllowed = "move";
+      return;
+    }
     const tb = e.target.closest("tbody[data-id]");
-    if (tb) { dragRow = tb.dataset.id; e.dataTransfer.effectAllowed = "move"; }
+    if (tb) {
+      dragRow = tb.dataset.id;
+      tb.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+    }
   });
 
   table.addEventListener("dragenter", e => {
@@ -1237,7 +1327,11 @@
     if (dragRow || dragCol) e.preventDefault();
   });
 
-  table.addEventListener("dragend", () => { dragRow = null; dragCol = null; });
+  table.addEventListener("dragend", () => {
+    dragRow = null;
+    dragCol = null;
+    table.querySelectorAll(".dragging").forEach(el => el.classList.remove("dragging"));
+  });
 
   /* toolbar */
   $("search").addEventListener("input", e => {
