@@ -348,9 +348,13 @@
      above at equal specificity, so source order decides. Animations are
      shortened rather than disabled — the collapsing pane is unmounted by its
      own animationend, which `animation: none` would never fire. */
-  /* Opening the page with ?motion=force overrides the OS preference, so the
-     demo still animates on a machine whose animation effects are switched
-     off (Windows: Accessibility > Visual effects > Animation effects). */
+  /* This prototype animates by default even where the OS asks for reduced
+     motion, because demonstrating the motion is the point of it and a
+     presenting machine often has animation effects switched off. Open it
+     with ?motion=auto to honour the OS preference instead.
+
+     The production port should invert this: honour the preference by
+     default, exactly as the rules below do when data-motion is absent. */
   @media (prefers-reduced-motion: reduce) {
     html:not([data-motion="force"]) .detail-grid.entering,
     html:not([data-motion="force"]) .detail-grid.collapsing { animation-duration: 1ms; }
@@ -619,8 +623,9 @@
    * with a transform, then lets that transform animate away — so the jump
    * plays as a slide without the layout ever being faked.
    * ------------------------------------------------------------------ */
+  // Animate by default; ?motion=auto hands control back to the OS preference.
   const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const forceMotion = /[?&]motion=force/.test(location.search);
+  const forceMotion = !/[?&]motion=auto/.test(location.search);
   if (forceMotion) document.documentElement.setAttribute("data-motion", "force");
   const reduceMotion = { get matches() { return !forceMotion && motionQuery.matches; } };
 
