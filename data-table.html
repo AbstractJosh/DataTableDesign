@@ -116,6 +116,12 @@
     letter-spacing: .12em; text-transform: uppercase; cursor: pointer;
   }
   .bulk-btn.ghost { border: none; opacity: .7; }
+  .bulk-btn.solid { background: var(--reversed); color: var(--accent); }
+  .bulk-btn:has(svg) { display: inline-flex; align-items: center; padding: 6px 10px; }
+  .bulk-prompt {
+    align-self: center; font-size: 11px; font-weight: 700;
+    letter-spacing: .1em; text-transform: uppercase;
+  }
 
   /* ---- 4. Table ---- */
   .table-scroll { overflow-x: auto; }
@@ -169,6 +175,9 @@
   tbody.picking > tr:first-child:not(.selected) {
     background: color-mix(in srgb, var(--accent) 6%, var(--ground));
   }
+  tbody.confirming > tr:first-child {
+    background: color-mix(in srgb, var(--danger) 8%, var(--ground));
+  }
   td {
     padding: var(--cell-pad-y) 12px;
     border-bottom: 1px solid var(--n300);
@@ -212,6 +221,9 @@
   .icon-btn.edit { color: var(--accent); border-color: var(--accent); }
   .icon-btn.edit.armed { background: var(--accent); color: var(--reversed); }
   .icon-btn.del  { color: var(--danger); border-color: var(--danger); }
+  /* delete confirmation, in place of the two action buttons */
+  .icon-btn.confirm { background: var(--danger); border-color: var(--danger); color: var(--reversed); }
+  .icon-btn.cancel  { color: var(--ink); border-color: var(--ink); }
 
   /* ---- inline edit: pick a field, then edit it ---- */
   .pick {
@@ -293,29 +305,6 @@
     background: var(--accent); border-color: var(--accent); color: var(--reversed);
   }
 
-  /* ---- confirm dialog (destructive actions) ---- */
-  .dialog-backdrop {
-    position: fixed; inset: 0; z-index: 10;
-    background: rgba(32, 30, 29, .55);
-    display: flex; align-items: center; justify-content: center; padding: 24px;
-  }
-  .dialog {
-    width: 100%; max-width: 440px;
-    background: var(--ground); border: 2px solid var(--ink);
-    padding: 24px 28px;
-  }
-  .dialog-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
-  .dialog-body {
-    font-size: 13px; line-height: 1.5; color: var(--n700); margin-bottom: 22px;
-  }
-  .dialog-body strong { color: var(--ink); font-weight: 700; }
-  .dialog-actions { display: flex; gap: 10px; }
-  .btn-danger {
-    padding: 11px 16px; border: 2px solid var(--danger); background: var(--danger);
-    color: var(--reversed); font-size: 11px; font-weight: 700; letter-spacing: .12em;
-    text-transform: uppercase; cursor: pointer; text-align: left;
-  }
-
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -359,11 +348,16 @@
   <!-- 3. Bulk-action bar -->
   <div class="bulk" id="bulkBar" hidden>
     <div class="bulk-count"><span id="bulkCount">0</span> selected</div>
-    <div class="bulk-actions">
+    <div class="bulk-actions" id="bulkActions">
       <button type="button" class="bulk-btn">Export</button>
       <button type="button" class="bulk-btn">Archive</button>
       <button type="button" class="bulk-btn" id="bulkDelete">Delete</button>
       <button type="button" class="bulk-btn ghost" id="bulkClear">Clear</button>
+    </div>
+    <div class="bulk-actions" id="bulkConfirm" hidden>
+      <span class="bulk-prompt">Delete <span id="bulkConfirmCount">0</span> records?</span>
+      <button type="button" class="bulk-btn solid" id="bulkYes" title="Confirm delete" aria-label="Confirm delete"></button>
+      <button type="button" class="bulk-btn" id="bulkNo" title="Keep them" aria-label="Cancel delete"></button>
     </div>
   </div>
 
@@ -401,19 +395,6 @@
     </div>
   </div>
 
-</div>
-
-<!-- Confirm dialog for destructive actions -->
-<div class="dialog-backdrop" id="confirm" hidden>
-  <div class="dialog" role="alertdialog" aria-modal="true"
-       aria-labelledby="confirmTitle" aria-describedby="confirmBody">
-    <div class="dialog-title" id="confirmTitle">Delete record</div>
-    <div class="dialog-body" id="confirmBody"></div>
-    <div class="dialog-actions">
-      <button type="button" class="btn-danger" id="confirmYes">Delete</button>
-      <button type="button" class="btn-secondary" id="confirmNo">Cancel</button>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -482,7 +463,8 @@
     page: 0,
     picking: null,         // record id whose fields are armed for editing
     editing: null,         // { id, key } — the field currently open in an editor
-    pendingDelete: null    // { ids, label } awaiting confirmation
+    confirmRow: null,      // record id whose delete is awaiting confirmation
+    confirmBulk: false     // the bulk delete is awaiting confirmation
   };
 
   const STATUSES = ["Success", "In progress", "Failed"];
@@ -502,6 +484,7 @@
   const ICON = {
     check: svg(12, 4, '<path d="M20 6 9 17l-5-5"></path>'),
     done: svg(15, 2, '<path d="M20 6 9 17l-5-5"></path>'),   // check at action-icon scale
+    cross: svg(15, 2, '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>'),
     chevron: svg(16, 4, '<path d="M6 9l6 6 6-6"></path>'),
     pencil: svg(15, 2, '<path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path>'),
     trash: svg(15, 2, '<path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M10 11v6"></path><path d="M14 11v6"></path>')
@@ -637,6 +620,26 @@
     return wrap('<span class="cell-text' + muted + '">' + esc(rec[key]) + '</span>');
   }
 
+  /* The action cell has two states. Normally: edit, delete. Awaiting a delete
+     confirmation: confirm, cancel — and the confirm deliberately takes the
+     EDIT slot, so a second click where the trash button was cancels rather
+     than destroys. */
+  function actionsHtml(rec, armed) {
+    if (state.confirmRow === rec.id) {
+      return '<button type="button" class="icon-btn confirm" data-act="confirmdelete" ' +
+               'title="Confirm delete" aria-label="Confirm delete">' + ICON.done + '</button>' +
+             '<button type="button" class="icon-btn cancel" data-act="canceldelete" ' +
+               'title="Keep this record" aria-label="Cancel delete">' + ICON.cross + '</button>';
+    }
+    return '<button type="button" class="icon-btn edit' + (armed ? " armed" : "") + '" ' +
+             'data-act="edit" aria-pressed="' + armed + '" ' +
+             'title="' + (armed ? "Done editing" : "Edit record — then pick a field") + '" ' +
+             'aria-label="' + (armed ? "Done editing" : "Edit record") + '">' +
+             (armed ? ICON.done : ICON.pencil) + '</button>' +
+           '<button type="button" class="icon-btn del" data-act="delete" ' +
+             'title="Delete record" aria-label="Delete record">' + ICON.trash + '</button>';
+  }
+
   function paintRow(tb, rec, index) {
     const selected = !!state.selected[rec.id];
     const expanded = !!state.expanded[rec.id];
@@ -645,6 +648,7 @@
     tb.classList.toggle("expanded", expanded);
     tb.classList.toggle("zebra-odd", CONFIG.zebraRows && index % 2 === 1);
     tb.classList.toggle("picking", armed);
+    tb.classList.toggle("confirming", state.confirmRow === rec.id);
 
     const cells = state.cols.map(key => '<td>' + cellHtml(rec, key) + '</td>').join("");
 
@@ -661,14 +665,7 @@
         '</td>' +
         cells +
         '<td class="cell-action">' +
-          '<div class="row-actions">' +
-            '<button type="button" class="icon-btn edit' + (armed ? " armed" : "") + '" ' +
-              'data-act="edit" aria-pressed="' + armed + '" ' +
-              'title="' + (armed ? "Done editing" : "Edit record — then pick a field") + '" ' +
-              'aria-label="' + (armed ? "Done editing" : "Edit record") + '">' +
-              (armed ? ICON.done : ICON.pencil) + '</button>' +
-            '<button type="button" class="icon-btn del" data-act="delete" title="Delete record" aria-label="Delete record">' + ICON.trash + '</button>' +
-          '</div>' +
+          '<div class="row-actions">' + actionsHtml(rec, armed) + '</div>' +
         '</td>' +
       '</tr>';
 
@@ -744,9 +741,13 @@
     /* status filter */
     filterBtns.forEach((b, i) => b.setAttribute("aria-pressed", String(FILTERS[i] === state.filter)));
 
-    /* bulk bar */
+    /* bulk bar — swaps to a confirm prompt while a bulk delete is pending */
+    if (selectedCount === 0) state.confirmBulk = false;
     $("bulkBar").hidden = selectedCount === 0;
     $("bulkCount").textContent = selectedCount;
+    $("bulkActions").hidden = state.confirmBulk;
+    $("bulkConfirm").hidden = !state.confirmBulk;
+    $("bulkConfirmCount").textContent = selectedCount;
 
     /* header columns — reorder in place, never rebuild */
     state.cols.forEach(key => {
@@ -813,6 +814,11 @@
     if (!trigger) return;
     const act = trigger.dataset.act;
 
+    // Any other interaction backs out of a pending delete.
+    if (act !== "delete" && act !== "confirmdelete" && act !== "canceldelete") {
+      state.confirmRow = null;
+    }
+
     if (act === "sort") {
       // ascending -> descending -> unsorted
       const key = trigger.closest("th").dataset.key;
@@ -835,8 +841,14 @@
     if (act === "select") state.selected[id] = !state.selected[id];
     else if (act === "expand") state.expanded[id] = !state.expanded[id];
     else if (act === "delete") {
-      const rec = state.data.find(r => r.id === id);
-      return askDelete([id], rec ? rec.name : id);
+      state.confirmRow = id;
+      state.picking = null;      // editing and deleting are separate intents
+      state.editing = null;
+    }
+    else if (act === "canceldelete") state.confirmRow = null;
+    else if (act === "confirmdelete") {
+      state.confirmRow = null;
+      dropRecords(r => r.id === id);
     }
     else if (act === "edit") {
       // The pencil arms the row rather than opening one fixed field.
@@ -852,43 +864,6 @@
       state.editing = null;          // back to picking, so another field can follow
     }
     render();
-  });
-
-  /* ---- delete confirmation ----------------------------------------- *
-   * An in-page dialog rather than window.confirm(): a native modal blocks
-   * the page and cannot be styled to the system.
-   * ------------------------------------------------------------------ */
-  const confirmEl = $("confirm");
-
-  function askDelete(ids, label) {
-    if (!ids.length) return;
-    state.pendingDelete = { ids, label };
-    const many = ids.length > 1;
-    $("confirmTitle").textContent = many ? "Delete " + ids.length + " records" : "Delete record";
-    $("confirmBody").innerHTML = "Delete <strong>" +
-      (many ? ids.length + " selected records" : esc(label)) +
-      "</strong>? This cannot be undone.";
-    confirmEl.hidden = false;
-    $("confirmNo").focus();     // destructive action is never the default
-  }
-
-  function closeConfirm() {
-    state.pendingDelete = null;
-    confirmEl.hidden = true;
-  }
-
-  $("confirmYes").addEventListener("click", () => {
-    const pending = state.pendingDelete;
-    if (!pending) return;
-    const ids = new Set(pending.ids);
-    dropRecords(r => ids.has(r.id));
-    closeConfirm();
-    render();
-  });
-
-  $("confirmNo").addEventListener("click", closeConfirm);
-  confirmEl.addEventListener("mousedown", e => {
-    if (e.target === confirmEl) closeConfirm();     // click the backdrop to dismiss
   });
 
   /* ---- inline edit lifecycle ---- */
@@ -916,9 +891,12 @@
     return true;
   }
 
+  // Anything that reshuffles which rows are on screen drops the per-row modes.
   function clearEditing() {
     state.picking = null;
     state.editing = null;
+    state.confirmRow = null;
+    state.confirmBulk = false;
   }
 
   // Runs before the browser moves focus, so the editor is still in the DOM and
@@ -947,7 +925,11 @@
       commitEdit();
       render();
     } else if (e.key === "Escape") {
-      if (state.pendingDelete) closeConfirm();
+      if (state.confirmRow || state.confirmBulk) {
+        state.confirmRow = null;
+        state.confirmBulk = false;
+        render();
+      }
       else if (state.editing) { state.editing = null; render(); }
       else if (state.picking) { state.picking = null; render(); }
     }
@@ -966,16 +948,21 @@
   });
 
   function dropRecords(match) {
-    state.data.filter(match).forEach(r => {
-      const tb = bodyCache.get(r.id);
+    // Resolve the match up front: the cleanup below clears state.selected,
+    // which a predicate like `r => state.selected[r.id]` reads — re-running it
+    // afterwards would match nothing and delete nothing.
+    const doomed = new Set(state.data.filter(match).map(r => r.id));
+    doomed.forEach(id => {
+      const tb = bodyCache.get(id);
       if (tb && tb.parentNode) tb.parentNode.removeChild(tb);
-      bodyCache.delete(r.id);
-      delete state.selected[r.id];
-      delete state.expanded[r.id];
-      if (state.picking === r.id) state.picking = null;
-      if (state.editing && state.editing.id === r.id) state.editing = null;
+      bodyCache.delete(id);
+      delete state.selected[id];
+      delete state.expanded[id];
+      if (state.picking === id) state.picking = null;
+      if (state.confirmRow === id) state.confirmRow = null;
+      if (state.editing && state.editing.id === id) state.editing = null;
     });
-    state.data = state.data.filter(r => !match(r));
+    state.data = state.data.filter(r => !doomed.has(r.id));
   }
 
   /* drag: rows and columns share one handler set */
@@ -1020,10 +1007,16 @@
   });
 
   /* bulk actions — Export and Archive are stubs, per the handoff */
-  // Same confirmation as the row delete — the bulk one destroys more.
-  $("bulkDelete").addEventListener("click", () => {
-    askDelete(Object.keys(state.selected).filter(k => state.selected[k]));
+  // Same two-step as the row delete — the bulk one destroys more.
+  $("bulkDelete").addEventListener("click", () => { state.confirmBulk = true; render(); });
+  $("bulkNo").addEventListener("click", () => { state.confirmBulk = false; render(); });
+  $("bulkYes").addEventListener("click", () => {
+    state.confirmBulk = false;
+    dropRecords(r => !!state.selected[r.id]);
+    render();
   });
+  $("bulkYes").innerHTML = ICON.done;
+  $("bulkNo").innerHTML = ICON.cross;
 
   $("bulkClear").addEventListener("click", () => {
     state.selected = Object.create(null);
