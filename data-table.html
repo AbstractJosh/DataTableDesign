@@ -1339,19 +1339,34 @@
   }
 
   /* drag: rows and columns share one handler set */
+  function endDrag() {
+    dragRow = null;
+    dragCol = null;
+    table.querySelectorAll(".dragging").forEach(el => el.classList.remove("dragging"));
+  }
+
   table.addEventListener("dragstart", e => {
+    const source = e.target.closest("th[data-key], tbody[data-id] > tr");
+    if (!source) return;
+
+    // A row reorder repaints the row, which destroys the <tr> the drag started
+    // on. The browser still fires dragend at it, but a detached node cannot
+    // bubble to the delegated listener below — so bind the cleanup to the
+    // source itself, where it fires either way. Otherwise dragRow stays set
+    // and the row is left hollowed out at 40% for good.
+    source.addEventListener("dragend", endDrag, { once: true });
+    e.dataTransfer.effectAllowed = "move";
+
     const th = e.target.closest("th[data-key]");
     if (th) {
       dragCol = th.dataset.key;
-      th.classList.add("dragging");          // immediate, without waiting for a render
-      e.dataTransfer.effectAllowed = "move";
+      th.classList.add("dragging");           // immediate, without waiting for a render
       return;
     }
     const tb = e.target.closest("tbody[data-id]");
     if (tb) {
       dragRow = tb.dataset.id;
       tb.classList.add("dragging");
-      e.dataTransfer.effectAllowed = "move";
     }
   });
 
@@ -1371,11 +1386,9 @@
     if (dragRow || dragCol) e.preventDefault();
   });
 
-  table.addEventListener("dragend", () => {
-    dragRow = null;
-    dragCol = null;
-    table.querySelectorAll(".dragging").forEach(el => el.classList.remove("dragging"));
-  });
+  // Second net: a drag that ends on a surviving node, and any completed drop.
+  table.addEventListener("dragend", endDrag);
+  table.addEventListener("drop", endDrag);
 
   /* toolbar */
   $("search").addEventListener("input", e => {
