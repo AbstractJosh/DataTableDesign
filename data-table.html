@@ -348,9 +348,16 @@
      above at equal specificity, so source order decides. Animations are
      shortened rather than disabled — the collapsing pane is unmounted by its
      own animationend, which `animation: none` would never fire. */
+  /* Opening the page with ?motion=force overrides the OS preference, so the
+     demo still animates on a machine whose animation effects are switched
+     off (Windows: Accessibility > Visual effects > Animation effects). */
   @media (prefers-reduced-motion: reduce) {
-    .detail-grid.entering, .detail-grid.collapsing { animation-duration: 1ms; }
-    .chevron svg, .caret, .seg-thumb, .seg-opt { transition-duration: 1ms; }
+    html:not([data-motion="force"]) .detail-grid.entering,
+    html:not([data-motion="force"]) .detail-grid.collapsing { animation-duration: 1ms; }
+    html:not([data-motion="force"]) .chevron svg,
+    html:not([data-motion="force"]) .caret,
+    html:not([data-motion="force"]) .seg-thumb,
+    html:not([data-motion="force"]) .seg-opt { transition-duration: 1ms; }
   }
 </style>
 </head>
@@ -612,7 +619,10 @@
    * with a transform, then lets that transform animate away — so the jump
    * plays as a slide without the layout ever being faked.
    * ------------------------------------------------------------------ */
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const forceMotion = /[?&]motion=force/.test(location.search);
+  if (forceMotion) document.documentElement.setAttribute("data-motion", "force");
+  const reduceMotion = { get matches() { return !forceMotion && motionQuery.matches; } };
 
   function snapshotRows() {
     const seen = new Map();
