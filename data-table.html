@@ -293,6 +293,29 @@
     background: var(--accent); border-color: var(--accent); color: var(--reversed);
   }
 
+  /* ---- confirm dialog (destructive actions) ---- */
+  .dialog-backdrop {
+    position: fixed; inset: 0; z-index: 10;
+    background: rgba(32, 30, 29, .55);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .dialog {
+    width: 100%; max-width: 440px;
+    background: var(--ground); border: 2px solid var(--ink);
+    padding: 24px 28px;
+  }
+  .dialog-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+  .dialog-body {
+    font-size: 13px; line-height: 1.5; color: var(--n700); margin-bottom: 22px;
+  }
+  .dialog-body strong { color: var(--ink); font-weight: 700; }
+  .dialog-actions { display: flex; gap: 10px; }
+  .btn-danger {
+    padding: 11px 16px; border: 2px solid var(--danger); background: var(--danger);
+    color: var(--reversed); font-size: 11px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; cursor: pointer; text-align: left;
+  }
+
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -380,6 +403,19 @@
 
 </div>
 
+<!-- Confirm dialog for destructive actions -->
+<div class="dialog-backdrop" id="confirm" hidden>
+  <div class="dialog" role="alertdialog" aria-modal="true"
+       aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+    <div class="dialog-title" id="confirmTitle">Delete record</div>
+    <div class="dialog-body" id="confirmBody"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn-danger" id="confirmYes">Delete</button>
+      <button type="button" class="btn-secondary" id="confirmNo">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (() => {
   "use strict";
@@ -445,7 +481,8 @@
     filter: "All",
     page: 0,
     picking: null,         // record id whose fields are armed for editing
-    editing: null          // { id, key } — the field currently open in an editor
+    editing: null,         // { id, key } — the field currently open in an editor
+    pendingDelete: null    // { ids, label } awaiting confirmation
   };
 
   const STATUSES = ["Success", "In progress", "Failed"];
@@ -464,6 +501,7 @@
 
   const ICON = {
     check: svg(12, 4, '<path d="M20 6 9 17l-5-5"></path>'),
+    done: svg(15, 2, '<path d="M20 6 9 17l-5-5"></path>'),   // check at action-icon scale
     chevron: svg(16, 4, '<path d="M6 9l6 6 6-6"></path>'),
     pencil: svg(15, 2, '<path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path>'),
     trash: svg(15, 2, '<path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M10 11v6"></path><path d="M14 11v6"></path>')
@@ -627,7 +665,8 @@
             '<button type="button" class="icon-btn edit' + (armed ? " armed" : "") + '" ' +
               'data-act="edit" aria-pressed="' + armed + '" ' +
               'title="' + (armed ? "Done editing" : "Edit record — then pick a field") + '" ' +
-              'aria-label="' + (armed ? "Done editing" : "Edit record") + '">' + ICON.pencil + '</button>' +
+              'aria-label="' + (armed ? "Done editing" : "Edit record") + '">' +
+              (armed ? ICON.done : ICON.pencil) + '</button>' +
             '<button type="button" class="icon-btn del" data-act="delete" title="Delete record" aria-label="Delete record">' + ICON.trash + '</button>' +
           '</div>' +
         '</td>' +
@@ -795,7 +834,10 @@
     const id = trigger.closest("tbody").dataset.id;
     if (act === "select") state.selected[id] = !state.selected[id];
     else if (act === "expand") state.expanded[id] = !state.expanded[id];
-    else if (act === "delete") dropRecords(r => r.id === id);
+    else if (act === "delete") {
+      const rec = state.data.find(r => r.id === id);
+      return askDelete([id], rec ? rec.name : id);
+    }
     else if (act === "edit") {
       // The pencil arms the row rather than opening one fixed field.
       state.picking = state.picking === id ? null : id;
@@ -810,6 +852,43 @@
       state.editing = null;          // back to picking, so another field can follow
     }
     render();
+  });
+
+  /* ---- delete confirmation ----------------------------------------- *
+   * An in-page dialog rather than window.confirm(): a native modal blocks
+   * the page and cannot be styled to the system.
+   * ------------------------------------------------------------------ */
+  const confirmEl = $("confirm");
+
+  function askDelete(ids, label) {
+    if (!ids.length) return;
+    state.pendingDelete = { ids, label };
+    const many = ids.length > 1;
+    $("confirmTitle").textContent = many ? "Delete " + ids.length + " records" : "Delete record";
+    $("confirmBody").innerHTML = "Delete <strong>" +
+      (many ? ids.length + " selected records" : esc(label)) +
+      "</strong>? This cannot be undone.";
+    confirmEl.hidden = false;
+    $("confirmNo").focus();     // destructive action is never the default
+  }
+
+  function closeConfirm() {
+    state.pendingDelete = null;
+    confirmEl.hidden = true;
+  }
+
+  $("confirmYes").addEventListener("click", () => {
+    const pending = state.pendingDelete;
+    if (!pending) return;
+    const ids = new Set(pending.ids);
+    dropRecords(r => ids.has(r.id));
+    closeConfirm();
+    render();
+  });
+
+  $("confirmNo").addEventListener("click", closeConfirm);
+  confirmEl.addEventListener("mousedown", e => {
+    if (e.target === confirmEl) closeConfirm();     // click the backdrop to dismiss
   });
 
   /* ---- inline edit lifecycle ---- */
@@ -868,7 +947,8 @@
       commitEdit();
       render();
     } else if (e.key === "Escape") {
-      if (state.editing) { state.editing = null; render(); }
+      if (state.pendingDelete) closeConfirm();
+      else if (state.editing) { state.editing = null; render(); }
       else if (state.picking) { state.picking = null; render(); }
     }
   });
@@ -940,10 +1020,9 @@
   });
 
   /* bulk actions — Export and Archive are stubs, per the handoff */
+  // Same confirmation as the row delete — the bulk one destroys more.
   $("bulkDelete").addEventListener("click", () => {
-    dropRecords(r => !!state.selected[r.id]);
-    state.selected = Object.create(null);
-    render();
+    askDelete(Object.keys(state.selected).filter(k => state.selected[k]));
   });
 
   $("bulkClear").addEventListener("click", () => {
