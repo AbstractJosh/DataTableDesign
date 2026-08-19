@@ -166,6 +166,9 @@
   tbody tr.selected { background: var(--surface); }
   tbody tr.selected > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   tbody.zebra-odd > tr:first-child:not(.selected) { background: var(--n100); }
+  tbody.picking > tr:first-child:not(.selected) {
+    background: color-mix(in srgb, var(--accent) 6%, var(--ground));
+  }
   td {
     padding: var(--cell-pad-y) 12px;
     border-bottom: 1px solid var(--n300);
@@ -207,7 +210,40 @@
     border: 2px solid; background: transparent; padding: 0; cursor: pointer;
   }
   .icon-btn.edit { color: var(--accent); border-color: var(--accent); }
+  .icon-btn.edit.armed { background: var(--accent); color: var(--reversed); }
   .icon-btn.del  { color: var(--danger); border-color: var(--danger); }
+
+  /* ---- inline edit: pick a field, then edit it ---- */
+  .pick {
+    display: inline-block; font: inherit; color: inherit; text-align: left;
+    background: transparent; border: none; padding: 3px 5px; margin: -3px -5px;
+    cursor: pointer;
+    outline: 2px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+    outline-offset: 0;
+  }
+  .pick:hover, .pick:focus-visible {
+    outline: 2px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .cell-input {
+    width: 100%; padding: 5px 7px;
+    border: 2px solid var(--accent); border-radius: 0;
+    background: var(--n100); color: var(--ink);
+    font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums;
+    outline: none;
+  }
+  .status-pick {
+    display: inline-flex; flex-direction: column;
+    border: 2px solid var(--accent); background: var(--n100);
+  }
+  .status-pick button {
+    padding: 5px 8px; border: none; border-bottom: 2px solid var(--accent);
+    background: transparent; color: var(--ink); text-align: left;
+    font-size: 9px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; cursor: pointer;
+  }
+  .status-pick button:last-child { border-bottom: none; }
+  .status-pick button.on { background: var(--accent); color: var(--reversed); }
 
   /* detail row */
   td.detail-cell {
@@ -407,8 +443,12 @@
     sort: null,            // { key, dir: "asc" | "desc" }
     query: "",
     filter: "All",
-    page: 0
+    page: 0,
+    picking: null,         // record id whose fields are armed for editing
+    editing: null          // { id, key } — the field currently open in an editor
   };
+
+  const STATUSES = ["Success", "In progress", "Failed"];
 
   // Held off state so dragging never triggers a render on its own.
   let dragRow = null;
@@ -453,6 +493,7 @@
     b.addEventListener("click", () => {
       state.filter = f;
       state.page = 0;
+      clearEditing();
       render();
     });
     $("filters").appendChild(b);
@@ -514,9 +555,35 @@
     return tb;
   }
 
-  function cellHtml(rec, key) {
+  /* The open editor for one field: a three-way picker for status (an enum
+     that drives the pill colors), a plain text box for everything else. */
+  function editorHtml(rec, key) {
     if (key === "status") {
-      return '<span class="pill ' + PILL_CLASS[rec.status] + '">' + esc(rec.status) + '</span>';
+      return '<div class="status-pick" role="group" aria-label="Edit status">' +
+        STATUSES.map(s =>
+          '<button type="button" class="' + (s === rec.status ? "on" : "") + '" ' +
+            'data-act="setstatus" data-value="' + esc(s) + '">' + esc(s) + '</button>'
+        ).join("") +
+      '</div>';
+    }
+    return '<input class="cell-input" type="text" ' +
+      'data-id="' + esc(rec.id) + '" data-key="' + key + '" ' +
+      'value="' + esc(rec[key]) + '" aria-label="Edit ' + esc(LABELS[key]) + '">';
+  }
+
+  function cellHtml(rec, key) {
+    const ed = state.editing;
+    if (ed && ed.id === rec.id && ed.key === key) return editorHtml(rec, key);
+
+    // While the row is armed, every field becomes a pick target.
+    const armed = state.picking === rec.id;
+    const wrap = inner => armed
+      ? '<button type="button" class="pick" data-act="pickcell" data-key="' + key + '" ' +
+          'title="Edit ' + esc(LABELS[key]) + '">' + inner + '</button>'
+      : inner;
+
+    if (key === "status") {
+      return wrap('<span class="pill ' + PILL_CLASS[rec.status] + '">' + esc(rec.status) + '</span>');
     }
     if (key === "name") {
       const open = !!state.expanded[rec.id];
@@ -525,24 +592,28 @@
                  'data-act="expand" aria-expanded="' + open + '" aria-label="Toggle details">' +
                  ICON.chevron +
                '</button>' +
-               '<span class="name-text">' + esc(rec.name) + '</span>' +
+               wrap('<span class="name-text">' + esc(rec.name) + '</span>') +
              '</div>';
     }
     const muted = (key === "email" || key === "address") ? " muted" : "";
-    return '<span class="cell-text' + muted + '">' + esc(rec[key]) + '</span>';
+    return wrap('<span class="cell-text' + muted + '">' + esc(rec[key]) + '</span>');
   }
 
   function paintRow(tb, rec, index) {
     const selected = !!state.selected[rec.id];
     const expanded = !!state.expanded[rec.id];
+    const armed = state.picking === rec.id;
 
     tb.classList.toggle("expanded", expanded);
     tb.classList.toggle("zebra-odd", CONFIG.zebraRows && index % 2 === 1);
+    tb.classList.toggle("picking", armed);
 
     const cells = state.cols.map(key => '<td>' + cellHtml(rec, key) + '</td>').join("");
 
+    // An armed row is not draggable: a draggable ancestor hijacks the
+    // click-and-drag that selects text inside the open editor.
     let html =
-      '<tr class="' + (selected ? "selected" : "") + '" draggable="true">' +
+      '<tr class="' + (selected ? "selected" : "") + '" draggable="' + !armed + '">' +
         '<td class="cell-grip"><span class="row-grip" title="Drag to reorder row">⠿</span></td>' +
         '<td class="cell-check">' +
           '<button type="button" class="check-box' + (selected ? " on" : "") + '" ' +
@@ -553,7 +624,10 @@
         cells +
         '<td class="cell-action">' +
           '<div class="row-actions">' +
-            '<button type="button" class="icon-btn edit" title="Edit record" aria-label="Edit record">' + ICON.pencil + '</button>' +
+            '<button type="button" class="icon-btn edit' + (armed ? " armed" : "") + '" ' +
+              'data-act="edit" aria-pressed="' + armed + '" ' +
+              'title="' + (armed ? "Done editing" : "Edit record — then pick a field") + '" ' +
+              'aria-label="' + (armed ? "Done editing" : "Edit record") + '">' + ICON.pencil + '</button>' +
             '<button type="button" class="icon-btn del" data-act="delete" title="Delete record" aria-label="Delete record">' + ICON.trash + '</button>' +
           '</div>' +
         '</td>' +
@@ -678,11 +752,18 @@
       b.className = "pager-num" + (i === page ? " active" : "");
       b.textContent = i + 1;
       if (i === page) b.setAttribute("aria-current", "page");
-      b.addEventListener("click", () => { state.page = i; render(); });
+      b.addEventListener("click", () => { state.page = i; clearEditing(); render(); });
       nums.appendChild(b);
     }
     $("prev").disabled = page === 0;
     $("next").disabled = page >= pageCount - 1;
+
+    /* the editor is rebuilt with its row, so put focus back into it */
+    const input = currentEditor();
+    if (input && document.activeElement !== input) {
+      input.focus();
+      input.select();
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -715,6 +796,92 @@
     if (act === "select") state.selected[id] = !state.selected[id];
     else if (act === "expand") state.expanded[id] = !state.expanded[id];
     else if (act === "delete") dropRecords(r => r.id === id);
+    else if (act === "edit") {
+      // The pencil arms the row rather than opening one fixed field.
+      state.picking = state.picking === id ? null : id;
+      state.editing = null;
+    }
+    else if (act === "pickcell") {
+      state.editing = { id, key: trigger.dataset.key };
+    }
+    else if (act === "setstatus") {
+      const rec = state.data.find(r => r.id === id);
+      if (rec) rec.status = trigger.dataset.value;
+      state.editing = null;          // back to picking, so another field can follow
+    }
+    render();
+  });
+
+  /* ---- inline edit lifecycle ---- */
+
+  function currentEditor() {
+    const ed = state.editing;
+    if (!ed) return null;
+    return table.querySelector(
+      '.cell-input[data-id="' + ed.id + '"][data-key="' + ed.key + '"]'
+    );
+  }
+
+  // Writes the open editor's value back to the record. Returns true if an
+  // edit was actually open, so callers know whether a render is owed.
+  function commitEdit() {
+    const ed = state.editing;
+    if (!ed) return false;
+    const input = currentEditor();
+    const rec = state.data.find(r => r.id === ed.id);
+    if (input && rec) {
+      const value = input.value.trim();
+      if (value) rec[ed.key] = value;   // refuse to blank a field
+    }
+    state.editing = null;
+    return true;
+  }
+
+  function clearEditing() {
+    state.picking = null;
+    state.editing = null;
+  }
+
+  // Runs before the browser moves focus, so the editor is still in the DOM and
+  // the node the user is clicking is not yet replaced by a re-render. Commit
+  // here, suppress the blur, and let the click land on the intact element —
+  // its own handler renders. Without this, switching straight from one field
+  // to another swallows the second click.
+  document.addEventListener("mousedown", e => {
+    if (!state.editing || !(e.target instanceof Element)) return;
+    if (e.target.closest(".cell-input, .status-pick")) return;   // inside the editor
+
+    const actionable = e.target.closest("[data-act]");
+    if (actionable && table.contains(actionable)) {
+      e.preventDefault();
+      commitEdit();
+    } else {
+      commitEdit();
+      render();
+    }
+  }, true);
+
+  // Keyboard exits: Enter commits, Escape backs out one level at a time.
+  document.addEventListener("keydown", e => {
+    if (e.key === "Enter" && e.target.classList && e.target.classList.contains("cell-input")) {
+      e.preventDefault();
+      commitEdit();
+      render();
+    } else if (e.key === "Escape") {
+      if (state.editing) { state.editing = null; render(); }
+      else if (state.picking) { state.picking = null; render(); }
+    }
+  });
+
+  // Safety net for focus lost by keyboard (Tab). Pointer cases are already
+  // handled above; `isConnected` skips nodes a render just detached.
+  table.addEventListener("focusout", e => {
+    const input = e.target;
+    if (!input.classList || !input.classList.contains("cell-input")) return;
+    const ed = state.editing;
+    if (!ed || input.dataset.id !== ed.id || input.dataset.key !== ed.key) return;
+    if (!input.isConnected) return;
+    commitEdit();
     render();
   });
 
@@ -725,6 +892,8 @@
       bodyCache.delete(r.id);
       delete state.selected[r.id];
       delete state.expanded[r.id];
+      if (state.picking === r.id) state.picking = null;
+      if (state.editing && state.editing.id === r.id) state.editing = null;
     });
     state.data = state.data.filter(r => !match(r));
   }
@@ -759,12 +928,14 @@
   $("search").addEventListener("input", e => {
     state.query = e.target.value;
     state.page = 0;
+    clearEditing();
     render();
   });
 
   $("resetOrder").addEventListener("click", () => {
     state.sort = null;
     state.cols = DEFAULT_COLS.slice();
+    clearEditing();
     render();
   });
 
@@ -781,8 +952,8 @@
   });
 
   /* pager */
-  $("prev").addEventListener("click", () => { state.page = Math.max(0, state.page - 1); render(); });
-  $("next").addEventListener("click", () => { state.page = state.page + 1; render(); });
+  $("prev").addEventListener("click", () => { state.page = Math.max(0, state.page - 1); clearEditing(); render(); });
+  $("next").addEventListener("click", () => { state.page = state.page + 1; clearEditing(); render(); });
 
   render();
 })();
