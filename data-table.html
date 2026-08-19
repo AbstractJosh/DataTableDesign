@@ -43,11 +43,12 @@
   }
   @keyframes dtExpand {
     from { opacity: 0; max-height: 0; }
-    to   { opacity: 1; max-height: 440px; }
+    to   { opacity: 1; max-height: var(--pane-h, 440px); }
   }
-  /* --pane-h is the pane's measured height, set when the collapse starts.
-     A fixed 440px here would spend most of the duration above the real
-     height, so the pane would hang still and then snap shut. */
+  /* --pane-h is the pane's measured height, set by JS on both directions.
+     A fixed 440px spends most of the duration beyond the real height, so
+     the easing curve lands outside what you can see and the motion reads
+     as a snap. */
   @keyframes dtCollapse {
     from { opacity: 1; max-height: var(--pane-h, 440px); }
     to   { opacity: 0; max-height: 0; }
@@ -56,7 +57,7 @@
   /* Animations must still *end* under reduced motion — the collapsing detail
      row is unmounted by its animationend event. Shorten, never disable. */
   @media (prefers-reduced-motion: reduce) {
-    .detail-grid, .detail-grid.collapsing { animation-duration: 1ms; }
+    .detail-grid.entering, .detail-grid.collapsing { animation-duration: 1ms; }
     .chevron svg, .caret { transition-duration: 1ms; }
   }
 
@@ -286,11 +287,14 @@
   .detail-grid {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
     background: var(--n300); border: 1px solid var(--n300);
-    overflow: hidden; animation: dtExpand 200ms ease-out;
+    overflow: hidden;
   }
+  /* Applied only on the render that opens the row, so unrelated repaints
+     do not replay the animation. */
+  .detail-grid.entering { animation: dtExpand 200ms ease-in-out; }
   /* `forwards` holds the pane collapsed until animationend unmounts it,
      so there is no flash of full height on the last frame. */
-  .detail-grid.collapsing { animation: dtCollapse 180ms ease-in forwards; }
+  .detail-grid.collapsing { animation: dtCollapse 180ms ease-in-out forwards; }
   .pane { background: var(--n100); padding: 16px 18px; }
   .pane-wide { grid-column: span 4; }
   .pane-label {
@@ -505,6 +509,10 @@
   const collapsing = new Set();
   const collapseTimers = Object.create(null);
   const collapseHeights = Object.create(null);
+
+  // Rows whose detail pane is animating in, for the one render that opens it.
+  const entering = new Set();
+  const enterTimers = Object.create(null);
 
   /* ------------------------------------------------------------------ *
    * Icons (traced from Lucide — pencil, trash-2, chevron-down, check)
@@ -927,6 +935,7 @@
       const tb = getTbody(rec);
       paintRow(tb, rec, i);
       table.appendChild(tb);
+      if (entering.has(rec.id)) startEnter(tb, rec.id);
     });
 
     /* empty state — a draft row still counts as something on screen */
@@ -1006,10 +1015,12 @@
         const grid = trigger.closest("tbody").querySelector(".detail-grid");
         collapseHeights[id] = grid ? Math.ceil(grid.getBoundingClientRect().height) : 440;
         delete state.expanded[id];
+        endEnter(id);                // cancel an expand still in flight
         startCollapse(id);
       } else {
         endCollapse(id, false);      // re-opening mid-collapse cancels it
         state.expanded[id] = true;
+        entering.add(id);
       }
     }
     else if (act === "delete") {
@@ -1047,6 +1058,24 @@
    * The detail row cannot animate out once it is unmounted, so a collapse
    * keeps it rendered until the animation reports back.
    * ------------------------------------------------------------------ */
+  /* Measure the pane at its natural height, then start the animation in the
+     same task — no frame is painted in between, so there is no flash of the
+     pane at full height before it animates open. */
+  function startEnter(tb, id) {
+    const grid = tb.querySelector(".detail-grid");
+    if (!grid) return;
+    grid.style.setProperty("--pane-h", Math.ceil(grid.getBoundingClientRect().height) + "px");
+    grid.classList.add("entering");
+    clearTimeout(enterTimers[id]);
+    enterTimers[id] = setTimeout(() => endEnter(id), 400);
+  }
+
+  function endEnter(id) {
+    clearTimeout(enterTimers[id]);
+    delete enterTimers[id];
+    entering.delete(id);
+  }
+
   function startCollapse(id) {
     collapsing.add(id);
     clearTimeout(collapseTimers[id]);
@@ -1063,9 +1092,15 @@
   }
 
   table.addEventListener("animationend", e => {
-    if (!e.target.classList || !e.target.classList.contains("collapsing")) return;
-    const tb = e.target.closest("tbody[data-id]");
-    if (tb) endCollapse(tb.dataset.id, true);
+    const el = e.target;
+    if (!el.classList) return;
+    const tb = el.closest("tbody[data-id]");
+    if (!tb) return;
+    if (el.classList.contains("collapsing")) endCollapse(tb.dataset.id, true);
+    else if (el.classList.contains("entering")) {
+      endEnter(tb.dataset.id);
+      el.classList.remove("entering");   // no repaint needed to settle
+    }
   });
 
   /* ---- inline edit lifecycle ---- */
@@ -1102,6 +1137,7 @@
     // Panes mid-collapse are about to be paged away; drop them now so a
     // returning row does not replay the animation.
     collapsing.forEach(id => endCollapse(id, false));
+    entering.forEach(endEnter);
   }
 
   // Runs before the browser moves focus, so the editor is still in the DOM and
@@ -1171,6 +1207,7 @@
       if (state.picking === id) state.picking = null;
       if (state.confirmRow === id) state.confirmRow = null;
       endCollapse(id, false);
+      endEnter(id);
       if (state.editing && state.editing.id === id) state.editing = null;
     });
     state.data = state.data.filter(r => !doomed.has(r.id));
