@@ -167,7 +167,16 @@
     cursor: grab; font-size: 13px; line-height: 1; letter-spacing: -2px;
     color: rgba(243, 242, 242, .55);
   }
-  .th-label { cursor: pointer; white-space: nowrap; }
+  /* `font: inherit` does not carry letter-spacing or text-transform, so the
+     button would otherwise drop the header's tracking and caps. */
+  .th-sort {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 0; border: none; background: transparent;
+    color: inherit; font: inherit;
+    letter-spacing: inherit; text-transform: inherit;
+    cursor: pointer;
+  }
+  .th-label { white-space: nowrap; }
   .grip:active, .row-grip:active { cursor: grabbing; }
   /* the element under the cursor, hollowed out while it is being moved */
   tbody.dragging > tr > td { opacity: .4; }
@@ -738,11 +747,15 @@
     th.dataset.key = key;
     th.draggable = true;
     th.style.width = WIDTHS[key];
+    // Label and caret share one control, so the arrow is part of the hit area.
     th.innerHTML =
       '<div class="th-inner">' +
         '<span class="grip" title="Drag to reorder column">⠿</span>' +
-        '<span class="th-label" data-act="sort">' + esc(LABELS[key]) + '</span>' +
-        '<span class="caret">▼</span>' +
+        '<button type="button" class="th-sort" data-act="sort" ' +
+          'title="Sort by ' + esc(LABELS[key]) + '">' +
+          '<span class="th-label">' + esc(LABELS[key]) + '</span>' +
+          '<span class="caret">▼</span>' +
+        '</button>' +
       '</div>';
     thCache.set(key, th);
     return th;
@@ -1052,6 +1065,9 @@
       const active = state.sort && state.sort.key === key;
       th.classList.toggle("is-sorted", !!active);
       th.classList.toggle("dragging", dragCol === key);
+      th.setAttribute("aria-sort", active
+        ? (state.sort.dir === "asc" ? "ascending" : "descending")
+        : "none");
       const caret = th.querySelector(".caret");
       caret.classList.toggle("asc", !!active && state.sort.dir === "asc");
       headRow.insertBefore(th, actionTh);
