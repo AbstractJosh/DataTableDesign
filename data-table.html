@@ -110,19 +110,8 @@
 
   /* ---- 3. Selection actions (in the toolbar) ---- */
   .tool-actions { display: flex; gap: 8px; }
-  .btn-secondary.danger { border-color: var(--danger); color: var(--danger); }
   /* the system's disabled step */
   .btn-secondary:disabled { opacity: .45; cursor: not-allowed; }
-  .tool-prompt {
-    align-self: center; font-size: 11px; font-weight: 700;
-    letter-spacing: .1em; text-transform: uppercase; color: var(--ink);
-  }
-  .btn-confirm, .btn-cancel {
-    display: inline-flex; align-items: center; justify-content: center;
-    padding: 11px 14px; border: 2px solid; background: transparent; cursor: pointer;
-  }
-  .btn-confirm { background: var(--danger); border-color: var(--danger); color: var(--reversed); }
-  .btn-cancel  { border-color: var(--ink); color: var(--ink); }
 
   /* ---- 4. Table ---- */
   .table-scroll { overflow-x: auto; }
@@ -367,16 +356,9 @@
     <div class="spacer"></div>
 
     <!-- selection actions: disabled until something is selected -->
-    <div class="tool-actions" id="bulkActions">
+    <div class="tool-actions">
       <button type="button" class="btn-secondary" id="bulkExport" disabled>Export</button>
       <button type="button" class="btn-secondary" id="bulkArchive" disabled>Archive</button>
-      <button type="button" class="btn-secondary danger" id="bulkDelete" disabled>Delete</button>
-      <button type="button" class="btn-secondary" id="bulkClear" disabled>Clear</button>
-    </div>
-    <div class="tool-actions" id="bulkConfirm" hidden>
-      <span class="tool-prompt">Delete <span id="bulkConfirmCount">0</span> records?</span>
-      <button type="button" class="btn-confirm" id="bulkYes" title="Confirm delete" aria-label="Confirm delete"></button>
-      <button type="button" class="btn-cancel" id="bulkNo" title="Keep them" aria-label="Cancel delete"></button>
     </div>
 
     <button type="button" class="btn-secondary" id="resetOrder">Reset order</button>
@@ -488,7 +470,6 @@
     picking: null,         // record id whose fields are armed for editing
     editing: null,         // { id, key } — the field currently open in an editor
     confirmRow: null,      // record id whose delete is awaiting confirmation
-    confirmBulk: false,    // the bulk delete is awaiting confirmation
     draft: null            // the unsaved new record pinned above the page
   };
 
@@ -966,15 +947,10 @@
     /* status filter */
     filterBtns.forEach((b, i) => b.setAttribute("aria-pressed", String(FILTERS[i] === state.filter)));
 
-    /* selection actions — greyed out with nothing selected, and swapped for a
-       confirm prompt while a bulk delete is pending. They keep their place in
-       the toolbar either way, so the table never shifts. */
-    if (selectedCount === 0) state.confirmBulk = false;
-    ["bulkExport", "bulkArchive", "bulkDelete", "bulkClear"]
+    /* selection actions — greyed out with nothing selected. They keep their
+       place in the toolbar either way, so the table never shifts. */
+    ["bulkExport", "bulkArchive"]
       .forEach(id => { $(id).disabled = selectedCount === 0; });
-    $("bulkActions").hidden = state.confirmBulk;
-    $("bulkConfirm").hidden = !state.confirmBulk;
-    $("bulkConfirmCount").textContent = selectedCount;
 
     /* header columns — reorder in place, never rebuild */
     state.cols.forEach(key => {
@@ -1207,7 +1183,6 @@
     state.picking = null;
     state.editing = null;
     state.confirmRow = null;
-    state.confirmBulk = false;
     // Panes mid-collapse are about to be paged away; drop them now so a
     // returning row does not replay the animation.
     collapsing.forEach(id => endCollapse(id, false));
@@ -1244,11 +1219,7 @@
       commitEdit();
       render();
     } else if (e.key === "Escape") {
-      if (state.confirmRow || state.confirmBulk) {
-        state.confirmRow = null;
-        state.confirmBulk = false;
-        render();
-      }
+      if (state.confirmRow) { state.confirmRow = null; render(); }
       else if (state.editing) { state.editing = null; render(); }
       else if (state.draft) { state.draft = null; render(); }
       else if (state.picking) { state.picking = null; render(); }
@@ -1344,22 +1315,6 @@
   });
 
   /* bulk actions — Export and Archive are stubs, per the handoff */
-  // Same two-step as the row delete — the bulk one destroys more.
-  $("bulkDelete").addEventListener("click", () => { state.confirmBulk = true; render(); });
-  $("bulkNo").addEventListener("click", () => { state.confirmBulk = false; render(); });
-  $("bulkYes").addEventListener("click", () => {
-    state.confirmBulk = false;
-    dropRecords(r => !!state.selected[r.id]);
-    render();
-  });
-  $("bulkYes").innerHTML = ICON.done;
-  $("bulkNo").innerHTML = ICON.cross;
-
-  $("bulkClear").addEventListener("click", () => {
-    state.selected = Object.create(null);
-    render();
-  });
-
   /* pager */
   $("prev").addEventListener("click", () => { state.page = Math.max(0, state.page - 1); clearEditing(); render(); });
   $("next").addEventListener("click", () => { state.page = state.page + 1; clearEditing(); render(); });
