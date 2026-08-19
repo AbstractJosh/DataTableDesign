@@ -45,6 +45,20 @@
     from { opacity: 0; max-height: 0; }
     to   { opacity: 1; max-height: 440px; }
   }
+  /* --pane-h is the pane's measured height, set when the collapse starts.
+     A fixed 440px here would spend most of the duration above the real
+     height, so the pane would hang still and then snap shut. */
+  @keyframes dtCollapse {
+    from { opacity: 1; max-height: var(--pane-h, 440px); }
+    to   { opacity: 0; max-height: 0; }
+  }
+
+  /* Animations must still *end* under reduced motion — the collapsing detail
+     row is unmounted by its animationend event. Shorten, never disable. */
+  @media (prefers-reduced-motion: reduce) {
+    .detail-grid, .detail-grid.collapsing { animation-duration: 1ms; }
+    .chevron svg, .caret { transition-duration: 1ms; }
+  }
 
   .shell { max-width: 1400px; margin: 0 auto; }
 
@@ -274,6 +288,9 @@
     background: var(--n300); border: 1px solid var(--n300);
     overflow: hidden; animation: dtExpand 200ms ease-out;
   }
+  /* `forwards` holds the pane collapsed until animationend unmounts it,
+     so there is no flash of full height on the last frame. */
+  .detail-grid.collapsing { animation: dtCollapse 180ms ease-in forwards; }
   .pane { background: var(--n100); padding: 16px 18px; }
   .pane-wide { grid-column: span 4; }
   .pane-label {
@@ -482,6 +499,12 @@
   // Held off state so dragging never triggers a render on its own.
   let dragRow = null;
   let dragCol = null;
+
+  // Rows whose detail pane is animating out. They are no longer `expanded`,
+  // but stay mounted until the collapse animation ends.
+  const collapsing = new Set();
+  const collapseTimers = Object.create(null);
+  const collapseHeights = Object.create(null);
 
   /* ------------------------------------------------------------------ *
    * Icons (traced from Lucide — pencil, trash-2, chevron-down, check)
@@ -761,9 +784,12 @@
   function paintRow(tb, rec, index) {
     const selected = !!state.selected[rec.id];
     const expanded = !!state.expanded[rec.id];
+    const leaving = collapsing.has(rec.id);
+    const showDetail = expanded || leaving;
     const armed = state.picking === rec.id;
 
-    tb.classList.toggle("expanded", expanded);
+    // Keep the divider suppressed for as long as the pane is on screen.
+    tb.classList.toggle("expanded", showDetail);
     tb.classList.toggle("zebra-odd", CONFIG.zebraRows && index % 2 === 1);
     tb.classList.toggle("picking", armed);
     tb.classList.toggle("confirming", state.confirmRow === rec.id);
@@ -787,7 +813,7 @@
         '</td>' +
       '</tr>';
 
-    if (expanded) {
+    if (showDetail) {
       const pane = (label, value) =>
         '<div class="pane"><div class="pane-label">' + label + '</div>' +
         '<div class="pane-value">' + esc(value) + '</div></div>';
@@ -795,7 +821,8 @@
       html +=
         '<tr>' +
           '<td class="detail-cell" colspan="' + (state.cols.length + 3) + '">' +
-            '<div class="detail-grid">' +
+            '<div class="detail-grid' + (leaving ? " collapsing" : "") + '"' +
+              (leaving ? ' style="--pane-h:' + (collapseHeights[rec.id] || 440) + 'px"' : "") + '>' +
               pane("Record ID", rec.id) +
               pane("Owner", rec.owner) +
               pane("Last activity", rec.activity) +
@@ -973,7 +1000,18 @@
 
     const id = trigger.closest("tbody").dataset.id;
     if (act === "select") state.selected[id] = !state.selected[id];
-    else if (act === "expand") state.expanded[id] = !state.expanded[id];
+    else if (act === "expand") {
+      if (state.expanded[id]) {
+        // Measure before the repaint takes the pane away.
+        const grid = trigger.closest("tbody").querySelector(".detail-grid");
+        collapseHeights[id] = grid ? Math.ceil(grid.getBoundingClientRect().height) : 440;
+        delete state.expanded[id];
+        startCollapse(id);
+      } else {
+        endCollapse(id, false);      // re-opening mid-collapse cancels it
+        state.expanded[id] = true;
+      }
+    }
     else if (act === "delete") {
       state.confirmRow = id;
       state.picking = null;      // editing and deleting are separate intents
@@ -1003,6 +1041,31 @@
     else if (act === "savedraft") return saveDraft();
     else if (act === "canceldraft") state.draft = null;
     render();
+  });
+
+  /* ---- collapse lifecycle ------------------------------------------ *
+   * The detail row cannot animate out once it is unmounted, so a collapse
+   * keeps it rendered until the animation reports back.
+   * ------------------------------------------------------------------ */
+  function startCollapse(id) {
+    collapsing.add(id);
+    clearTimeout(collapseTimers[id]);
+    // Fallback in case animationend never arrives — a row detached mid-flight
+    // by a delete or a page change would otherwise strand the pane open.
+    collapseTimers[id] = setTimeout(() => endCollapse(id, true), 400);
+  }
+
+  function endCollapse(id, repaint) {
+    clearTimeout(collapseTimers[id]);
+    delete collapseTimers[id];
+    delete collapseHeights[id];
+    if (collapsing.delete(id) && repaint) render();
+  }
+
+  table.addEventListener("animationend", e => {
+    if (!e.target.classList || !e.target.classList.contains("collapsing")) return;
+    const tb = e.target.closest("tbody[data-id]");
+    if (tb) endCollapse(tb.dataset.id, true);
   });
 
   /* ---- inline edit lifecycle ---- */
@@ -1036,6 +1099,9 @@
     state.editing = null;
     state.confirmRow = null;
     state.confirmBulk = false;
+    // Panes mid-collapse are about to be paged away; drop them now so a
+    // returning row does not replay the animation.
+    collapsing.forEach(id => endCollapse(id, false));
   }
 
   // Runs before the browser moves focus, so the editor is still in the DOM and
@@ -1104,6 +1170,7 @@
       delete state.expanded[id];
       if (state.picking === id) state.picking = null;
       if (state.confirmRow === id) state.confirmRow = null;
+      endCollapse(id, false);
       if (state.editing && state.editing.id === id) state.editing = null;
     });
     state.data = state.data.filter(r => !doomed.has(r.id));
