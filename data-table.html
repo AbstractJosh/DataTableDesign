@@ -108,28 +108,21 @@
     color: var(--reversed); padding: 0; cursor: pointer;
   }
 
-  /* ---- 3. Bulk-action bar ---- */
-  .bulk {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; padding: 12px 16px;
-    background: var(--accent); color: var(--reversed);
-  }
-  .bulk-count {
-    font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
-  }
-  .bulk-actions { display: flex; gap: 10px; }
-  .bulk-btn {
-    padding: 7px 12px; border: 2px solid var(--reversed); background: transparent;
-    color: var(--reversed); font-size: 10px; font-weight: 700;
-    letter-spacing: .12em; text-transform: uppercase; cursor: pointer;
-  }
-  .bulk-btn.ghost { border: none; opacity: .7; }
-  .bulk-btn.solid { background: var(--reversed); color: var(--accent); }
-  .bulk-btn:has(svg) { display: inline-flex; align-items: center; padding: 6px 10px; }
-  .bulk-prompt {
+  /* ---- 3. Selection actions (in the toolbar) ---- */
+  .tool-actions { display: flex; gap: 8px; }
+  .btn-secondary.danger { border-color: var(--danger); color: var(--danger); }
+  /* the system's disabled step */
+  .btn-secondary:disabled { opacity: .45; cursor: not-allowed; }
+  .tool-prompt {
     align-self: center; font-size: 11px; font-weight: 700;
-    letter-spacing: .1em; text-transform: uppercase;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--ink);
   }
+  .btn-confirm, .btn-cancel {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 11px 14px; border: 2px solid; background: transparent; cursor: pointer;
+  }
+  .btn-confirm { background: var(--danger); border-color: var(--danger); color: var(--reversed); }
+  .btn-cancel  { border-color: var(--ink); color: var(--ink); }
 
   /* ---- 4. Table ---- */
   .table-scroll { overflow-x: auto; }
@@ -372,26 +365,24 @@
     <input id="search" class="search" type="text" placeholder="Search name, email or address" aria-label="Search records">
     <div class="seg" id="filters" role="group" aria-label="Status filter"></div>
     <div class="spacer"></div>
+
+    <!-- selection actions: disabled until something is selected -->
+    <div class="tool-actions" id="bulkActions">
+      <button type="button" class="btn-secondary" id="bulkExport" disabled>Export</button>
+      <button type="button" class="btn-secondary" id="bulkArchive" disabled>Archive</button>
+      <button type="button" class="btn-secondary danger" id="bulkDelete" disabled>Delete</button>
+      <button type="button" class="btn-secondary" id="bulkClear" disabled>Clear</button>
+    </div>
+    <div class="tool-actions" id="bulkConfirm" hidden>
+      <span class="tool-prompt">Delete <span id="bulkConfirmCount">0</span> records?</span>
+      <button type="button" class="btn-confirm" id="bulkYes" title="Confirm delete" aria-label="Confirm delete"></button>
+      <button type="button" class="btn-cancel" id="bulkNo" title="Keep them" aria-label="Cancel delete"></button>
+    </div>
+
     <button type="button" class="btn-secondary" id="resetOrder">Reset order</button>
     <button type="button" class="btn-primary" id="newRecord" title="New record" aria-label="New record">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
     </button>
-  </div>
-
-  <!-- 3. Bulk-action bar -->
-  <div class="bulk" id="bulkBar" hidden>
-    <div class="bulk-count"><span id="bulkCount">0</span> selected</div>
-    <div class="bulk-actions" id="bulkActions">
-      <button type="button" class="bulk-btn">Export</button>
-      <button type="button" class="bulk-btn">Archive</button>
-      <button type="button" class="bulk-btn" id="bulkDelete">Delete</button>
-      <button type="button" class="bulk-btn ghost" id="bulkClear">Clear</button>
-    </div>
-    <div class="bulk-actions" id="bulkConfirm" hidden>
-      <span class="bulk-prompt">Delete <span id="bulkConfirmCount">0</span> records?</span>
-      <button type="button" class="bulk-btn solid" id="bulkYes" title="Confirm delete" aria-label="Confirm delete"></button>
-      <button type="button" class="bulk-btn" id="bulkNo" title="Keep them" aria-label="Cancel delete"></button>
-    </div>
   </div>
 
   <!-- 4. Table -->
@@ -975,10 +966,12 @@
     /* status filter */
     filterBtns.forEach((b, i) => b.setAttribute("aria-pressed", String(FILTERS[i] === state.filter)));
 
-    /* bulk bar — swaps to a confirm prompt while a bulk delete is pending */
+    /* selection actions — greyed out with nothing selected, and swapped for a
+       confirm prompt while a bulk delete is pending. They keep their place in
+       the toolbar either way, so the table never shifts. */
     if (selectedCount === 0) state.confirmBulk = false;
-    $("bulkBar").hidden = selectedCount === 0;
-    $("bulkCount").textContent = selectedCount;
+    ["bulkExport", "bulkArchive", "bulkDelete", "bulkClear"]
+      .forEach(id => { $(id).disabled = selectedCount === 0; });
     $("bulkActions").hidden = state.confirmBulk;
     $("bulkConfirm").hidden = !state.confirmBulk;
     $("bulkConfirmCount").textContent = selectedCount;
