@@ -127,8 +127,16 @@
   display: flex; align-items: stretch; gap: 12px;
   padding: 18px 0; flex-wrap: wrap;
 }
+/* `flex-grow: 0`, deliberately: the spacer is the toolbar's only grower, so it
+   alone absorbs whatever the flow block and the "Show" selector are not using.
+   Growing this too made the two of them split the slack, and the search field
+   then measured differently depending on what the block happened to say — a
+   `SUM 177` block and an `IN PROGRESS RATE 62.5% (5 of 8)` block are ~160px
+   apart — so the field and everything after it slid sideways when the selection
+   moved from one column to another. Basis is the full 380 it used to grow to;
+   `shrink: 1` still lets it give way down to 220 before the toolbar wraps. */
 .dt-root .dt-search {
-  flex: 1 1 280px; max-width: 380px; min-width: 220px;
+  flex: 0 1 380px; max-width: 380px; min-width: 220px;
   padding: 11px 13px; border: 2px solid var(--dt-ink); border-radius: 0;
   background: var(--dt-n100); color: var(--dt-ink);
   font-size: 13px; font-weight: 500; outline: none;
@@ -450,8 +458,7 @@
    empty dock. Present-and-disabled says the same thing and holds its own place.
 
    Ink on hover, not --dt-danger: this throws away conditions, not records, and
-   red is this system's destructive-only signal. Same call as .dt-chip-remove,
-   and the same one "Reset order" makes for discarding the sort. */
+   red is this system's destructive-only signal. Same call as .dt-chip-remove. */
 .dt-root .dt-dock-revert {
   flex: 0 0 auto;
   width: var(--dt-dock-h); height: var(--dt-dock-h);
@@ -992,13 +999,17 @@
 /* the anchor keeps whatever the row is painted with — zebra, selected, armed */
 .dt-root td.dt-range.dt-range-active { background: transparent; }
 
-/* ---- The sum readout (PORT ADDITION) ---------------------------------
-   The total for the cell selection, when it has one. It lives in the toolbar,
-   in the accent, immediately before the selection actions — after the flex
-   spacer, so appearing and disappearing never moves the buttons beside it. It
-   slides in from their side and fades back out the same way; the exit is held
-   open by a timer in the component, because an unmounted element cannot
-   animate. */
+/* ---- The flow block and its selector (PORT ADDITION) ------------------
+   What the cell selection comes to, when it comes to anything. It lives in the
+   toolbar, in the accent, immediately before the selection actions — after the
+   flex spacer, so appearing and disappearing never moves the buttons beside it.
+   It slides in from their side and fades back out the same way; the exit is
+   held open by a timer in the component, because an unmounted element cannot
+   animate.
+
+   The class names still say `sum`, which is what the block could answer before
+   the "Show" selector existed. They are the same object and renaming them would
+   buy nothing but a diff. */
 .dt-root .dt-sum {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 14px;
@@ -1013,6 +1024,115 @@
 }
 .dt-root .dt-sum-value {
   font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+/* A rate's "(5 of 8)": the count the percentage was taken over. Muted to the
+   tag's weight — it is the working, not the answer — and set on the same
+   figures so the two numbers in it line up with the value beside them. */
+.dt-root .dt-sum-note {
+  font-size: 11px; font-weight: 500;
+  color: rgba(243, 242, 242, .7); font-variant-numeric: tabular-nums;
+}
+
+/* ---- "Show": the flow block's preferences (PORT ADDITION) -------------
+   The selector that says what each kind of selection reads as, standing where
+   "Reset order" did.
+
+   It is drawn to match section 2's `.dt-filter-btn` — the system has one shape
+   for "a labelled value you can open", and this is one — but it is written out
+   rather than borrowing those class names. <MetricMenu> is not a <FilterMenu>
+   (its docblock says why), and the one time this file did put a second caller
+   on `.dt-filter` it needed 4c to prise the two apart again. Three callers and
+   two override blocks is the version of this that goes wrong; the cost of
+   keeping them separate is these twenty lines, and the two shapes are checked
+   against each other by eye when either moves. */
+.dt-root .dt-metric { position: relative; display: flex; }
+.dt-root .dt-metric-btn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 13px; border: 2px solid var(--dt-ink);
+  background: var(--dt-n100); color: var(--dt-ink);
+  cursor: pointer; text-align: left;
+}
+.dt-root .dt-metric-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600);
+}
+/* The width of the longest label ("In progress rate"), with the caret pushed
+   off the end of it, so the button is one fixed size for all thirteen metrics.
+   Left to shrink-wrap it would resize as the selection moved from a column of
+   counts to a column of statuses. The toolbar must not move because the readout
+   changed what it is called — and this only holds the selector still. What
+   holds the rest of the toolbar still is `.dt-spacer` being its only growing
+   item (see section 2), so the width the block and this button take is spent
+   out of the gap between them and the search field rather than out of the
+   search field itself. */
+.dt-root .dt-metric-value {
+  font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; white-space: nowrap; min-width: 138px;
+}
+.dt-root .dt-metric-caret {
+  margin-left: auto;
+  font-size: 8px; line-height: 1; color: var(--dt-n600);
+  transition: transform 180ms ease;
+}
+.dt-root .dt-metric-btn.dt-open { background: var(--dt-accent); color: var(--dt-reversed); }
+.dt-root .dt-metric-btn.dt-open .dt-metric-tag,
+.dt-root .dt-metric-btn.dt-open .dt-metric-caret { color: rgba(243, 242, 242, .7); }
+.dt-root .dt-metric-btn.dt-open .dt-metric-caret { transform: rotate(180deg); }
+
+/* Hung off the button's right edge, not its left: the selector is the last
+   control but one in the toolbar, and a panel dropping leftwards from a button
+   that close to the end would push past the content column. Thirteen options
+   under three headings are taller than most of what this file drops, so it
+   scrolls; the roving focus brings each option into view on its own. */
+.dt-root .dt-metric-pop {
+  position: absolute; top: 100%; right: 0; z-index: 20;
+  min-width: 100%; max-height: 320px; overflow-y: auto;
+  border: 2px solid var(--dt-ink); border-top: none;
+  background: var(--dt-n100);
+  animation: dt-menu-in 140ms ease;
+}
+/* The in-force cue: a 2px accent edge down the section the current selection is
+   being read under, and its heading in the accent with it. Transparent on every
+   other section rather than absent, so marking one does not shunt the panel's
+   contents 2px sideways. Structural weight in the accent is all the system
+   gives for "this one" — no ring, no tint, and nothing that would need a shadow
+   or a radius. */
+.dt-root .dt-metric-group { border-left: 2px solid transparent; }
+.dt-root .dt-metric-group.dt-metric-now { border-left-color: var(--dt-accent); }
+.dt-root .dt-metric-group.dt-metric-now .dt-metric-head { color: var(--dt-accent); }
+/* Smaller and wider-tracked than an option, in the muted ink, on the surface
+   step: a heading has to read as a label for the block under it and not as the
+   first entry of that block. The hairline under it is the row-divider weight
+   the system reserves for exactly this. */
+.dt-root .dt-metric-head {
+  padding: 9px 13px 6px;
+  font-size: 9px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--dt-n600); background: var(--dt-surface);
+  border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-metric-opts { margin: 0; padding: 0; list-style: none; }
+.dt-root .dt-metric-opts li {
+  padding: 10px 13px; white-space: nowrap; cursor: pointer;
+  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--dt-n300);
+}
+/* Only the panel's very last option loses its divider; between two sections the
+   heading's own top edge is what separates them. */
+.dt-root .dt-metric-group:last-child .dt-metric-opts li:last-child { border-bottom: none; }
+.dt-root .dt-metric-opts li:hover,
+.dt-root .dt-metric-opts li:focus { background: var(--dt-surface); outline: none; }
+.dt-root .dt-metric-opts li[aria-checked="true"] {
+  background: var(--dt-accent); color: var(--dt-reversed);
+}
+/* The panel moves focus itself, so the cursor has to be visible on the checked
+   option too — and the hover tint is exactly what the accent fill paints over.
+   A real ring, inverted on the accent-filled row, after the rule above so it
+   outranks the `outline: none` at equal specificity. */
+.dt-root .dt-metric-opts li:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -2px;
+}
+.dt-root .dt-metric-opts li[aria-checked="true"]:focus-visible {
+  outline-color: var(--dt-reversed);
 }
 
 /* Counts line up column-wise, the way a number column should. */
@@ -1043,6 +1163,8 @@
 .dt-root[data-dt-motion="never"] .dt-caret,
 .dt-root[data-dt-motion="never"] .dt-filter-caret,
 .dt-root[data-dt-motion="never"] .dt-filter-list,
+.dt-root[data-dt-motion="never"] .dt-metric-caret,
+.dt-root[data-dt-motion="never"] .dt-metric-pop,
 .dt-root[data-dt-motion="never"] .dt-sum,
 .dt-root[data-dt-motion="never"] .dt-dock-tag,
 .dt-root[data-dt-motion="never"] .dt-dock-tag::before,
@@ -1061,6 +1183,8 @@
   .dt-root:not([data-dt-motion="always"]) .dt-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-filter-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-filter-list,
+  .dt-root:not([data-dt-motion="always"]) .dt-metric-caret,
+  .dt-root:not([data-dt-motion="always"]) .dt-metric-pop,
   .dt-root:not([data-dt-motion="always"]) .dt-sum,
   .dt-root:not([data-dt-motion="always"]) .dt-dock-tag,
   .dt-root:not([data-dt-motion="always"]) .dt-dock-tag::before,

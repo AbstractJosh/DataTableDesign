@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DataTable } from './DataTable'
 import { createDemoRecords } from './demoData'
 import { COLUMN_DRAG_MIME } from './FilterDock'
+import type { RateMetricKey } from './metrics'
 import type { DataTableRecord } from './types'
 
 function setup(props: Partial<React.ComponentProps<typeof DataTable>> = {}) {
@@ -608,6 +609,10 @@ describe('selection', () => {
  * one caller now is the operator picker inside a filter chip's popup, so the
  * keyboard contract is exercised there — same component, same keys, and the
  * dock's own lists are held to it too.
+ *
+ * The toolbar's "Show" selector is deliberately NOT this component — it holds
+ * one value per kind of cell content rather than one value — but it answers the
+ * same keys, and the "flow block" describe holds it to them.
  */
 describe('operator menu', () => {
   /** A text column's operators, in the words OP_LABELS gives them. */
@@ -781,6 +786,10 @@ describe('expand and collapse', () => {
     expect(screen.getByText('Record ID')).toBeInTheDocument()
     expect(screen.getByText('REC-4813')).toBeInTheDocument()
     expect(screen.getByText('Last activity')).toBeInTheDocument()
+    // and the values are the prototype's, unedited. "Unassigned" is the owner
+    // this port writes on a *freshly saved draft*; the seed row picking it up
+    // would quietly make the demo set say something the design never did.
+    expect(screen.getByText('Amelia Hart', { selector: '.dt-pane-value' })).toBeInTheDocument()
     expect(toggles[0]).toHaveAttribute('aria-expanded', 'true')
 
     await user.click(toggles[0])
@@ -1129,28 +1138,28 @@ describe('reordering', () => {
     expect(rowNames()).toEqual(before)
   })
 
-  it('moves a column with Alt+ArrowRight and Reset order puts it back', async () => {
+  /**
+   * PORT: this used to end on a "Reset order" click. That button is gone — the
+   * flow block's "Show" selector has its toolbar slot — and with it the only
+   * control that restored `columns` or cleared the sort from the toolbar. What
+   * is left is the move itself, and the way back is the way it came: the header
+   * cell is keyed by its column, so the `th` node (and the focus inside it)
+   * travels with the column and the next press lands on the same grip.
+   */
+  it('moves a column with Alt+ArrowRight, and Alt+ArrowLeft brings it back', async () => {
     const { user } = setup()
     expect(columnKeys()).toEqual(DEFAULT_KEYS)
 
-    const grip = screen.getByRole('button', { name: /^Reorder Name column/ })
-    grip.focus()
+    const grip = () => screen.getByRole('button', { name: /^Reorder Name column/ })
+    grip().focus()
     await user.keyboard('{Alt>}{ArrowRight}{/Alt}')
     expect(columnKeys()).toEqual([
       'date', 'name', 'status', 'solvedCases', 'favouriteSeason', 'address',
     ])
 
-    await user.click(screen.getByRole('button', { name: 'Reset order' }))
+    expect(grip()).toHaveFocus()
+    await user.keyboard('{Alt>}{ArrowLeft}{/Alt}')
     expect(columnKeys()).toEqual(DEFAULT_KEYS)
-  })
-
-  it('Reset order also clears the sort', async () => {
-    const { user } = setup()
-    await user.click(screen.getByRole('button', { name: 'Sort by Name' }))
-    await user.click(screen.getByRole('button', { name: 'Reset order' }))
-    expect(
-      screen.getByRole('button', { name: 'Sort by Name' }).closest('th'),
-    ).toHaveAttribute('aria-sort', 'none')
   })
 })
 
@@ -1322,7 +1331,7 @@ describe('the dock drop', () => {
     expect(chip('Name')).toBeInTheDocument()
   })
 
-  it('that restore keeps the sort — it is setColumnOrder, not Reset order', () => {
+  it('that restore keeps the sort, the way every column move does', () => {
     setup()
     fireEvent.click(screen.getByRole('button', { name: 'Sort by Date' }))
     const dt = transfer()
@@ -1641,6 +1650,13 @@ describe('cell range', () => {
   })
 })
 
+/**
+ * The block as it was before it could be asked anything but a total: Sum is
+ * still what a rectangle of numbers reads as out of the box, so every rule
+ * below is still the shipped default. The preferences that can move it, the
+ * other twelve metrics and the block's own DOM are the sibling "flow block"
+ * describe.
+ */
 describe('sum readout', () => {
   const cell = (row: number, col: number) =>
     document.querySelector(`td[data-row="${row}"][data-col="${col}"]`) as HTMLElement
@@ -1790,6 +1806,509 @@ describe('sum readout', () => {
     // April still sorts above March, because "02" sorts above "04" — the
     // prototype's wart, and untouched by the numeric comparator
     expect(rowNames()[0]).toBe('Priya Anand') // 02 April, 2026
+  })
+})
+
+/**
+ * PORT ADDITION: the same block, asked something other than "what do these add
+ * up to".
+ *
+ * The toolbar's "Show" selector does not pick the metric. It holds one
+ * preference per *kind* of cell content — numbers, Status values, Favourite
+ * season values — and the rectangle decides which of them answers: sweep a
+ * column of counts and the number preference reads them, sweep a column of
+ * statuses and the status preference does, with nothing set in between. A
+ * rectangle can no longer be the wrong kind for the metric on show, which is
+ * the dead end this shape of the control removes.
+ *
+ * The arithmetic is unit-tested in metrics.test.ts and is not re-derived here.
+ * What these cover is the wiring: which preference a rectangle puts in force,
+ * the state that survives a pick, the DOM the block renders, the selector's own
+ * keyboard, and what the live region says.
+ *
+ * The class names are still the sum's (`dt-sum*`). They named the one thing the
+ * block could say when it grew, and renaming them would buy nothing.
+ */
+describe('flow block', () => {
+  const cell = (row: number, col: number) =>
+    document.querySelector(`td[data-row="${row}"][data-col="${col}"]`) as HTMLElement
+  const ranged = () => Array.from(document.querySelectorAll('td.dt-range'))
+  const text = (el: Element) => (el.textContent || '').trim()
+
+  const panel = () => document.querySelector('.dt-sum')
+  const tag = () => panel()?.querySelector('.dt-sum-tag')?.textContent
+  const shown = () => panel()?.querySelector('.dt-sum-value')?.textContent
+  /** The muted "(5 of 8)". Only rates have one. */
+  const note = () => panel()?.querySelector('.dt-sum-note')?.textContent
+
+  /** The three columns these read: Status, Solved cases, Favourite season. */
+  const STATUS = 2
+  const CASES = 3
+  const SEASON = 4
+
+  const sweep = (from: HTMLElement, to: HTMLElement) => {
+    fireEvent.mouseDown(from)
+    fireEvent.mouseOver(to)
+    fireEvent.mouseUp(document)
+  }
+
+  /** The selector, by its accessible name — "Showing <the metric in force>". */
+  const showButton = () => screen.getByRole('button', { name: /^Showing/ })
+  /** Its panel. Reached by class: the dock's chip popups are dialogs too. */
+  const pop = () => document.querySelector('.dt-metric-pop')
+
+  /**
+   * Set one category's preference, the way a user does. Picking deliberately
+   * leaves the panel open so a second kind can be set in the same visit, so
+   * this opens it only when it is shut.
+   */
+  const pick = async (user: User, metric: string) => {
+    if (!pop()) await user.click(showButton())
+    await user.click(screen.getByRole('radio', { name: metric }))
+  }
+
+  /** The demo set with the case counts replaced, for the awkward values. */
+  const withCases = (values: string[]): DataTableRecord[] =>
+    createDemoRecords()
+      .slice(0, values.length)
+      .map((record, i) => ({ ...record, solvedCases: values[i] }))
+
+  it('opens on Sum, which is all the block could say before the selector', () => {
+    setup()
+    expect(showButton()).toHaveTextContent('Sum')
+    expect(panel()).toBeNull()
+
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(tag()).toBe('SUM')
+    expect(shown()).toBe('177') // 128 + 42 + 7
+    // no muted count: that belongs to the rates, which are shares of something
+    expect(panel()!.querySelector('.dt-sum-note')).toBeNull()
+  })
+
+  it('reads the same rectangle again when the number preference moves', async () => {
+    const { user } = setup()
+    sweep(cell(0, CASES), cell(2, CASES)) // 128, 42, 7
+
+    await pick(user, 'Product')
+    expect(tag()).toBe('PRODUCT')
+    expect(shown()).toMatch(/^37.632$/) // grouped in the reader's locale
+
+    await pick(user, 'Mean')
+    expect(tag()).toBe('MEAN')
+    expect(shown()).toBe('59')
+
+    await pick(user, 'Median')
+    expect(shown()).toBe('42')
+
+    await pick(user, 'Highest')
+    expect(shown()).toBe('128')
+
+    await pick(user, 'Lowest')
+    expect(shown()).toBe('7')
+
+    await pick(user, 'Sum')
+    expect(shown()).toBe('177')
+  })
+
+  it('gives a derived number more places than the cells carried', async () => {
+    const { user } = setup({ records: withCases(['1', '2']) })
+    sweep(cell(0, CASES), cell(1, CASES))
+    expect(shown()).toBe('3') // the total of two integers is an integer
+
+    await pick(user, 'Mean')
+    expect(shown()).toMatch(/^1[.,]5$/) // their mean is not
+  })
+
+  it('writes a product too big to read in exponent form', async () => {
+    const { user } = setup({ records: withCases(['123456789', '987654321']) })
+    sweep(cell(0, CASES), cell(1, CASES))
+
+    await pick(user, 'Product')
+    // Eighteen digits is a wall, not a readout — and past 2^53 the trailing
+    // ones are the float's rather than the data's.
+    expect(shown()).toMatch(/^1.219E17$/)
+  })
+
+  it('follows the selection from one kind of cell to the next, with nothing set in between', async () => {
+    const { user } = setup()
+    await pick(user, 'Mean')
+
+    sweep(cell(0, CASES), cell(2, CASES)) // 128, 42, 7
+    expect(tag()).toBe('MEAN')
+    expect(shown()).toBe('59')
+    expect(showButton()).toHaveTextContent('Mean')
+
+    /*
+     * The headline behaviour. The same drag one column to the left lands on
+     * statuses, and the block answers with the *status* preference — which was
+     * never chosen and never visited, while Mean is still what a rectangle of
+     * numbers reads as. The selector holds preferences; it is not a mode the
+     * selection has to be matched to.
+     */
+    sweep(cell(0, STATUS), cell(3, STATUS)) // Success, Success, In progress, Failed
+    expect(tag()).toBe('SUCCESS RATE')
+    expect(shown()).toMatch(/^50\s?%$/)
+    expect(note()).toBe('(2 of 4)')
+    expect(showButton()).toHaveTextContent('Success rate')
+
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(tag()).toBe('MEAN')
+    expect(shown()).toBe('59')
+  })
+
+  it('keeps a preference per enum column, not one for enums', async () => {
+    const { user } = setup()
+    await pick(user, 'Failed rate')
+    // the same visit sets the second kind: a pick commits without closing
+    expect(pop()).not.toBeNull()
+    await pick(user, 'Summer rate')
+
+    sweep(cell(0, STATUS), cell(3, STATUS)) // Success, Success, In progress, Failed
+    expect(tag()).toBe('FAILED RATE')
+    expect(shown()).toMatch(/^25\s?%$/)
+    expect(note()).toBe('(1 of 4)')
+
+    sweep(cell(0, SEASON), cell(3, SEASON)) // Summer, Spring, Summer, Autumn
+    expect(tag()).toBe('SUMMER RATE')
+    expect(shown()).toMatch(/^50\s?%$/)
+    expect(note()).toBe('(2 of 4)')
+
+    // "Success rate" would be meaningless over a rectangle of seasons, which is
+    // why each enum column carries its own pick instead of sharing one
+    sweep(cell(0, STATUS), cell(3, STATUS))
+    expect(tag()).toBe('FAILED RATE')
+  })
+
+  it('has nothing to say about text, dates, or a rectangle of two minds', () => {
+    setup()
+    sweep(cell(0, 0), cell(2, 0)) // a column of names, as it always was
+    expect(panel()).toBeNull()
+
+    sweep(cell(0, 1), cell(2, 1)) // dates parse as no number and no enum value
+    expect(panel()).toBeNull()
+
+    // half statuses and half counts is not a question with an answer — and the
+    // kind is read off the cells, not off the columns they came from, which is
+    // the rule the sum has always had
+    sweep(cell(0, STATUS), cell(1, CASES))
+    expect(panel()).toBeNull()
+  })
+
+  it('has nothing to say about two enum columns at once', () => {
+    // Status and Favourite season are not neighbours in the default order, so
+    // the host's own column order is what puts them side by side. The rule does
+    // not care how they got there: a rectangle has to be one kind of thing.
+    setup({ columns: ['status', 'favouriteSeason', 'name', 'date', 'solvedCases', 'address'] })
+    sweep(cell(0, 0), cell(1, 1))
+    expect(panel()).toBeNull()
+
+    // and either of them alone still answers, under its own preference
+    sweep(cell(0, 0), cell(3, 0))
+    expect(tag()).toBe('SUCCESS RATE')
+    sweep(cell(0, 1), cell(3, 1))
+    expect(tag()).toBe('SPRING RATE')
+  })
+
+  it('needs two cells before it calls anything a rate', () => {
+    setup()
+    fireEvent.mouseDown(cell(0, STATUS))
+    fireEvent.mouseUp(document)
+    expect(panel()).toBeNull() // "100% of one cell" is no more a statistic than one cell is a sum
+
+    fireEvent.keyDown(cell(0, STATUS), { key: 'ArrowDown', shiftKey: true })
+    expect(tag()).toBe('SUCCESS RATE')
+    expect(shown()).toMatch(/^100\s?%$/)
+    expect(note()).toBe('(2 of 2)')
+  })
+
+  it('keeps the cell rectangle it is reporting on', async () => {
+    const { user } = setup()
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(ranged().map(text)).toEqual(['128', '42', '7'])
+    expect(shown()).toBe('177')
+
+    await pick(user, 'Mean')
+
+    /*
+     * Load-bearing, and the reason `setMetric` is in KEEPS_RANGE (state.ts):
+     * every action outside that set nulls `state.range`, so without it the
+     * press that asked the block a different question would take away the very
+     * rectangle it was asking about, and the block would vanish mid-answer.
+     * The panel is still open at this point, which is the other half of it —
+     * the next pick has to have something to report on too.
+     */
+    expect(ranged().map(text)).toEqual(['128', '42', '7'])
+    expect(cell(2, CASES)).toHaveClass('dt-range-active')
+    expect(shown()).toBe('59')
+  })
+
+  it('names the metric in force, and falls back to the numbers one with nothing selected', async () => {
+    const { user } = setup()
+    expect(showButton()).toHaveTextContent('Sum')
+    // the words are not the only way to know what it holds, and the name says
+    // what the control is for as well as what it currently reads
+    expect(showButton()).toHaveAccessibleName(/^Showing Sum\. Set what each kind/)
+
+    sweep(cell(0, STATUS), cell(3, STATUS))
+    expect(showButton()).toHaveTextContent('Success rate')
+    expect(showButton()).toHaveAccessibleName(/^Showing Success rate\./)
+
+    // with the rectangle gone nothing is in force, so it falls back to the
+    // numbers preference rather than holding on to the last answer
+    fireEvent.keyDown(cell(0, STATUS), { key: 'Escape' })
+    expect(panel()).toBeNull()
+    expect(showButton()).toHaveTextContent('Sum')
+
+    await pick(user, 'Median')
+    expect(showButton()).toHaveTextContent('Median')
+  })
+
+  it('speaks the metric in force, not the word Sum', async () => {
+    const { user } = setup()
+    await pick(user, 'Mean')
+
+    fireEvent.mouseDown(cell(0, CASES))
+    fireEvent.mouseUp(document)
+    fireEvent.keyDown(cell(0, CASES), { key: 'ArrowDown', shiftKey: true })
+
+    // the block is aria-hidden, so the live region is the whole of what a
+    // screen reader hears — in sentence case, not the tag's upper case
+    expect(panel()).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByRole('status')).toHaveTextContent('Mean 85') // (128 + 42) / 2
+
+    // and the same keys over the status column speak the status preference,
+    // without the selector being opened again
+    fireEvent.mouseDown(cell(0, STATUS))
+    fireEvent.mouseUp(document)
+    fireEvent.keyDown(cell(0, STATUS), { key: 'ArrowDown', shiftKey: true })
+    expect(screen.getByRole('status')).toHaveTextContent(/Success rate 100\s?%\./)
+  })
+
+  it('seeds from the metrics prop and reports the whole record back', async () => {
+    const onMetricsChange = vi.fn()
+    const { user } = setup({
+      metrics: { number: 'median', status: 'rate:status:Failed' },
+      onMetricsChange,
+    })
+    expect(showButton()).toHaveTextContent('Median')
+
+    sweep(cell(0, STATUS), cell(3, STATUS))
+    expect(tag()).toBe('FAILED RATE')
+
+    await pick(user, 'Autumn rate')
+    // the whole record, not the one preference that moved: a host storing this
+    // between visits gets back something it can hand straight to the prop, and
+    // the two categories it did not name are in it at their defaults
+    expect(onMetricsChange).toHaveBeenCalledTimes(1)
+    expect(onMetricsChange).toHaveBeenCalledWith({
+      number: 'median',
+      status: 'rate:status:Failed',
+      favouriteSeason: 'rate:favouriteSeason:Autumn',
+    })
+
+    // and the prop does not own it after that first read — the selector does
+    expect(showButton()).toHaveTextContent('Failed rate')
+  })
+
+  it('drops a preference that names no metric, and one filed under the wrong kind', () => {
+    setup({
+      metrics: {
+        // the rate keys are a template literal type, so a typo type-checks
+        status: 'rate:status:Successful',
+        // and this is a real metric on the wrong shelf — no rectangle of
+        // seasons can answer "the mean of these". The cast is the lie the
+        // guard is there to catch.
+        favouriteSeason: 'mean' as RateMetricKey,
+      },
+    })
+    // neither blanks the block: the default stands where the junk was
+    expect(showButton()).toHaveTextContent('Sum')
+
+    sweep(cell(0, STATUS), cell(3, STATUS))
+    expect(tag()).toBe('SUCCESS RATE')
+
+    sweep(cell(0, SEASON), cell(3, SEASON)) // Summer, Spring, Summer, Autumn
+    expect(tag()).toBe('SPRING RATE')
+    expect(shown()).toMatch(/^25\s?%$/)
+  })
+
+  it('stands where "Reset order" did, between the actions and New record', () => {
+    setup()
+    const root = showButton().closest('.dt-metric') as HTMLElement
+    expect(root).not.toBeNull()
+    // and nowhere near `.dt-filter`: section 4c of the stylesheet sizes that
+    // component inside a chip popup, and neither may reach the other
+    expect(root.closest('.dt-filter')).toBeNull()
+    expect(document.querySelectorAll('.dt-metric .dt-filter')).toHaveLength(0)
+
+    expect(root.previousElementSibling).toHaveClass('dt-tool-actions')
+    expect(root.nextElementSibling).toHaveClass('dt-btn-primary')
+    // the button whose slot this is has gone with its action
+    expect(screen.queryByRole('button', { name: 'Reset order' })).toBeNull()
+  })
+
+  it('sections the panel by kind, without making the headings options', async () => {
+    const { user } = setup()
+    await user.click(showButton())
+
+    expect(
+      screen.getByRole('dialog', { name: 'What each kind of cell selection reads as' }),
+    ).toBe(pop())
+
+    // three radio groups rather than one list of thirteen: "Success rate" is
+    // not an alternative to "Sum", it is the answer to a different question
+    const groups = screen.getAllByRole('radiogroup')
+    expect(groups.map((group) => within(group).getAllByRole('radio').length)).toEqual([6, 3, 4])
+    expect(screen.getByRole('radiogroup', { name: 'Numbers' })).toBe(groups[0])
+    expect(screen.getByRole('radiogroup', { name: 'Status' })).toBe(groups[1])
+    expect(screen.getByRole('radiogroup', { name: 'Favourite season' })).toBe(groups[2])
+
+    // one current pick in each, not one across the panel
+    expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual([
+      'Sum',
+      'Success rate',
+      'Spring rate',
+    ])
+
+    // the headings are plain divs: not radios, not focusable, and not
+    // something the arrows can land on
+    const headings = Array.from(document.querySelectorAll('.dt-metric-head'))
+    expect(headings.map(text)).toEqual(['Numbers', 'Status', 'Favourite season'])
+    headings.forEach((heading) => {
+      expect(heading).not.toHaveAttribute('tabindex')
+      expect(heading).not.toHaveAttribute('role')
+    })
+
+    // one tab stop per section — not one for the panel, and not thirteen
+    expect(pop()!.querySelectorAll('[tabindex="0"]')).toHaveLength(3)
+  })
+
+  it('marks the section the selection is being read under', async () => {
+    const { user } = setup()
+    sweep(cell(0, STATUS), cell(3, STATUS))
+    await user.click(showButton())
+
+    const marked = Array.from(document.querySelectorAll('.dt-metric-group.dt-metric-now'))
+    expect(marked).toHaveLength(1)
+    expect(within(marked[0] as HTMLElement).getByRole('radio', { name: 'Success rate' }))
+      .toBeInTheDocument()
+
+    // the accent edge is not the only way to know which one it is
+    expect(screen.getByRole('radiogroup', { name: /^Status/ })).toHaveAccessibleName(
+      'Status — in use for this selection',
+    )
+
+    // nothing selected, nothing in force, nothing marked
+    await user.keyboard('{Escape}')
+    fireEvent.keyDown(cell(0, STATUS), { key: 'Escape' })
+    await user.click(showButton())
+    expect(document.querySelectorAll('.dt-metric-now')).toHaveLength(0)
+  })
+
+  it('moves inside a section with the arrows, and between them with Tab', async () => {
+    const { user } = setup()
+    const radio = (name: string) => screen.getByRole('radio', { name })
+    showButton().focus()
+
+    await user.keyboard('{ArrowDown}')
+    expect(radio('Sum')).toHaveFocus() // opens on the section's own pick
+
+    await user.keyboard('{ArrowUp}')
+    expect(radio('Sum')).toHaveFocus() // and stops at the top
+
+    await user.keyboard('{End}')
+    expect(radio('Lowest')).toHaveFocus()
+
+    // the arrows stay inside the section — each is its own radio group, so
+    // "Success rate" is not the option after "Lowest"
+    await user.keyboard('{ArrowDown}')
+    expect(radio('Lowest')).toHaveFocus()
+
+    // Tab is what crosses, landing on the next section's own pick
+    await user.tab()
+    expect(radio('Success rate')).toHaveFocus()
+
+    // and moving does not commit: the pick is still where it was
+    expect(radio('Success rate')).toHaveAttribute('aria-checked', 'true')
+
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(radio('In progress rate')).toHaveAttribute('aria-checked', 'true')
+    expect(radio('Success rate')).toHaveAttribute('aria-checked', 'false')
+    // committing does not close, so the same visit can set another kind
+    expect(pop()).not.toBeNull()
+    expect(radio('In progress rate')).toHaveFocus()
+
+    // the button still reads Sum: it names the metric in force, and with
+    // nothing selected that is the numbers preference, not the pick just made
+    expect(showButton()).toHaveTextContent('Sum')
+  })
+
+  it('closes on Escape and on a press outside, and hands the focus back', async () => {
+    const { user } = setup()
+    await user.click(showButton())
+    await user.keyboard('{ArrowDown}{Escape}')
+
+    expect(pop()).toBeNull()
+    expect(showButton()).toHaveTextContent('Sum') // the arrow committed nothing
+    expect(showButton()).toHaveFocus()
+
+    // a press anywhere else closes it too, and leaves the focus where the
+    // pointer went — FilterMenu's rule, and the dock's
+    await user.click(showButton())
+    expect(pop()).not.toBeNull()
+    fireEvent.mouseDown(document.body)
+    expect(pop()).toBeNull()
+  })
+
+  /**
+   * Focus can be on the button with the panel still standing: Shift+Tab out of
+   * the first section goes there, and the panel deliberately stays open for
+   * anywhere inside the control. Both keys the control answers have to answer
+   * from there too, and the Escape is the one that matters — unhandled, it
+   * reaches the table root's own Escape chain, which would clear the rectangle
+   * the block is reading. That is the selection `setMetric` sits in KEEPS_RANGE
+   * to protect, thrown away by a press that was meant to shut a menu.
+   */
+  it('answers Escape from the button, and leaves the selection where it was', async () => {
+    const { user } = setup()
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(shown()).toBe('177')
+
+    await user.click(showButton())
+    await user.tab({ shift: true })
+    expect(showButton()).toHaveFocus()
+    expect(pop()).not.toBeNull() // still open — focus is inside the control
+
+    await user.keyboard('{Escape}')
+    expect(pop()).toBeNull()
+    expect(showButton()).toHaveFocus()
+    // and it stopped here rather than carrying on up to the root
+    expect(ranged()).toHaveLength(3)
+    expect(shown()).toBe('177')
+  })
+
+  it('steps back into the panel from the button, where the sections were left', async () => {
+    const { user } = setup()
+    const radio = (name: string) => screen.getByRole('radio', { name })
+    await user.click(showButton())
+
+    await user.tab() // into Status
+    await user.keyboard('{ArrowDown}') // standing on the option below its pick
+    expect(radio('In progress rate')).toHaveFocus()
+
+    await user.tab({ shift: true })
+    await user.tab({ shift: true })
+    expect(showButton()).toHaveFocus()
+
+    // an arrow from the button means "back into the panel", not "open it": it
+    // has to move focus, and it has to leave every section standing where the
+    // keyboard left it rather than snapping them all back to their picks
+    await user.keyboard('{ArrowDown}')
+    expect(radio('Sum')).toHaveFocus()
+    await user.tab()
+    expect(radio('In progress rate')).toHaveFocus()
+    // and none of that committed anything
+    expect(radio('Success rate')).toHaveAttribute('aria-checked', 'true')
   })
 })
 

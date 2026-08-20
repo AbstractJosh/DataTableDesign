@@ -6,6 +6,8 @@
  */
 import type { CSSProperties, ReactNode } from 'react'
 
+import type { MetricPrefs } from './metrics'
+
 export type RecordStatus = 'Success' | 'In progress' | 'Failed'
 
 /** The six reorderable data columns. The grip, select and action columns are fixed. */
@@ -74,6 +76,26 @@ export interface DataTableProps {
    */
   rowsPerPage?: number
   onRowsPerPageChange?: (rows: number) => void
+  /**
+   * What each *kind* of cell content should read as in the flow block: a metric
+   * for numbers, one for each enum column's values. Which of them a given cell
+   * selection uses is not set here and is not settable — the rectangle decides,
+   * by what is in it. Drag across counts and the block reads the `number`
+   * preference; drag across statuses and the same block reads the `status` one.
+   *
+   * Partial, and merged over the defaults (Sum, Success rate, Spring rate), so
+   * a host that only cares about one category names only that one. Read once,
+   * like `rowsPerPage`: the toolbar's **Show** selector owns the record after
+   * that and reports every change through `onMetricsChange`.
+   *
+   * A preference that names no metric is dropped and the default kept — the
+   * rate keys are a template literal type, so `'rate:nonsense'` type-checks —
+   * and so is a real metric filed under the wrong category, since
+   * `{ status: 'mean' }` is not a question a rectangle of statuses can answer.
+   */
+  metrics?: Partial<MetricPrefs>
+  /** The whole record after a change, not just the preference that moved. */
+  onMetricsChange?: (prefs: MetricPrefs) => void
   zebraRows?: boolean
 
   title?: string

@@ -28,20 +28,26 @@ import './DataTable.css'
 import {
   clampRect,
   describeRange,
-  formatSum,
   rangeHtml,
   rangeRect,
   rangeSize,
-  rangeSum,
   rangeText,
   writeClipboard,
   type CellRef,
   type RangeRect,
-  type RangeSum,
 } from './cellRange'
 import { DetailPane } from './DetailPane'
 import { COLUMN_DRAG_MIME, FilterDock } from './FilterDock'
 import { COLUMN_TYPES, ENUM_OPTIONS, matchesAll } from './filters'
+import { MetricMenu } from './MetricMenu'
+import {
+  metricCategory,
+  metricInForce,
+  rangeMetric,
+  setMetricPref,
+  type MetricKey,
+  type MetricResult,
+} from './metrics'
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -639,6 +645,8 @@ export function DataTable(props: DataTableProps) {
     density = 'comfortable',
     rowsPerPage: initialRowsPerPage = 8,
     onRowsPerPageChange,
+    metrics: initialMetrics,
+    onMetricsChange,
     zebraRows = true,
     title = 'Data table',
     kicker = 'Records / Directory',
@@ -655,8 +663,6 @@ export function DataTable(props: DataTableProps) {
     children,
   } = props
 
-  const defaultCols = useMemo(() => columns ?? DEFAULT_COLUMNS, [columns])
-
   const [internalRecords, setInternalRecords] = useState<DataTableRecord[]>(
     () => (defaultRecords ? defaultRecords.slice() : createDemoRecords()),
   )
@@ -671,9 +677,11 @@ export function DataTable(props: DataTableProps) {
     [controlled, onRecordsChange],
   )
 
-  // The seed is read once; `rowsPerPage` belongs to the toolbar after that.
+  // The seeds are read once; `rowsPerPage` and the metric preferences belong to
+  // the toolbar after that. A partial `metrics` is merged over the defaults and
+  // anything unrecognised in it dropped — the guard is in `initialState`.
   const [state, dispatch] = useReducer(reducer, null, () =>
-    initialState(defaultCols, initialRowsPerPage),
+    initialState(columns ?? DEFAULT_COLUMNS, initialRowsPerPage, initialMetrics),
   )
   const rowsPerPage = state.rowsPerPage
 
@@ -772,40 +780,55 @@ export function DataTable(props: DataTableProps) {
         }
       : null
 
-  // Present only while every selected cell holds a number; see rangeSum.
-  const sum = useMemo(
-    () => (rangeBox ? rangeSum(visible, state.cols, rangeBox) : null),
-    [rangeBox, visible, state.cols],
+  /**
+   * What the flow block says about the rectangle — a total, a mean, the share
+   * of it reading "Success". The rectangle's own cells decide *which* of those
+   * it is: they are read, their category worked out, and that category's
+   * preference answers. `null` when they have no one category at all (a column
+   * of names, a rectangle half counts and half statuses), and the block then
+   * stays away. See metrics.ts.
+   */
+  const reading = useMemo(
+    () => (rangeBox ? rangeMetric(visible, state.cols, rangeBox, state.metrics) : null),
+    [rangeBox, visible, state.cols, state.metrics],
   )
 
   /**
-   * A total that has gone away still has to be on screen to fade out, so the
-   * panel keeps rendering the last one for the length of the fade. A live total
-   * always wins over it, and with motion off it is skipped entirely — the same
-   * rule the FLIP follows.
+   * The metric the block is displaying, and the section of the selector that is
+   * speaking for it. Both fall back with the block: with nothing selected the
+   * button names the number preference and no section is marked.
    */
-  const [fadingSum, setFadingSum] = useState<RangeSum | null>(null)
-  const lastSum = useRef<RangeSum | null>(null)
+  const inForce = reading ? metricCategory(reading.metric) : null
+  const showing = metricInForce(state.metrics, reading)
+
+  /**
+   * An answer that has gone away still has to be on screen to fade out, so the
+   * panel keeps rendering the last one for the length of the fade. A live
+   * answer always wins over it, and with motion off it is skipped entirely —
+   * the same rule the FLIP follows.
+   */
+  const [fadingReading, setFadingReading] = useState<MetricResult | null>(null)
+  const lastReading = useRef<MetricResult | null>(null)
   const fadeTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => {
-    const previous = lastSum.current
-    lastSum.current = sum
+    const previous = lastReading.current
+    lastReading.current = reading
 
-    if (sum) {
+    if (reading) {
       window.clearTimeout(fadeTimer.current)
-      setFadingSum(null)
+      setFadingReading(null)
       return
     }
     if (!previous || !motion) return
 
-    setFadingSum(previous)
-    fadeTimer.current = window.setTimeout(() => setFadingSum(null), SUM_FADE_MS)
-  }, [sum, motion])
+    setFadingReading(previous)
+    fadeTimer.current = window.setTimeout(() => setFadingReading(null), SUM_FADE_MS)
+  }, [reading, motion])
 
   useEffect(() => () => window.clearTimeout(fadeTimer.current), [])
 
-  const shownSum = sum ?? fadingSum
+  const shownReading = reading ?? fadingReading
 
   // One tab stop for the whole grid: the moving corner owns it, or the first
   // cell when nothing is selected yet.
@@ -880,8 +903,8 @@ export function DataTable(props: DataTableProps) {
    * cross the header to get out of it, and every `dragenter` on a neighbouring
    * `<th>` moved the column one place along — so the order the pointer left
    * behind is not the order the user asked for. Put the pre-drag order back
-   * first (sort intact, which is why this is `setColumnOrder` and not
-   * `resetOrder`), then add the chip.
+   * first — verbatim and sort intact, which is what `setColumnOrder` is for —
+   * then add the chip.
    */
   const onDropColumn = useCallback(
     (key: ColumnKey) => {
@@ -1027,11 +1050,14 @@ export function DataTable(props: DataTableProps) {
 
   const announceRange = (rect: RangeRect | null) => {
     if (!rect) return
-    // The panel itself is aria-hidden, so this is the only way the total
-    // reaches anyone driving the grid from the keyboard.
-    const total = rangeSum(visible, state.cols, rect)
+    // The panel itself is aria-hidden, so this is the only way the readout
+    // reaches anyone driving the grid from the keyboard — and it says whichever
+    // metric these cells actually put in force, in the sentence case a screen
+    // reader can read (the panel's tag is upper case, which one spells out
+    // letter by letter). The full stop is the caller's, as it always was.
+    const answer = rangeMetric(visible, state.cols, rect, state.metrics)
     const said = describeRange(rect, state.cols, visible.length)
-    announce(total ? `${said} Sum ${formatSum(total)}.` : said)
+    announce(answer ? `${said} ${answer.speech}.` : said)
   }
 
   const onCellMouseDown = (event: MouseEvent<HTMLTableElement>) => {
@@ -1409,6 +1435,21 @@ export function DataTable(props: DataTableProps) {
     onRowsPerPageChange?.(rows)
   }
 
+  // Same shape as the slider above: the reducer owns the value, the prop only
+  // seeded it, and the host hears about every move. The cell rectangle survives
+  // this one — see KEEPS_RANGE in state.ts, without which setting a preference
+  // would take away the very selection the block is reporting on.
+  //
+  // The next record is worked out here as well as in the reducer so the host
+  // can be handed it. `setMetricPref` is pure and returns its argument when
+  // nothing moves, which is also the no-op guard.
+  const setMetric = (next: MetricKey) => {
+    const prefs = setMetricPref(state.metrics, next)
+    if (prefs === state.metrics) return
+    dispatch({ type: 'setMetric', metric: next })
+    onMetricsChange?.(prefs)
+  }
+
   const selectedRecords = () => records.filter((r) => state.selected[r.id])
 
   return (
@@ -1476,13 +1517,19 @@ export function DataTable(props: DataTableProps) {
 
         <div className="dt-spacer" />
 
-        {/* The total for the cell selection, when it has one. It sits after the
-            spacer, so it appears and disappears in the gap without moving the
-            buttons to its right. */}
-        {shownSum ? (
-          <div className={cx('dt-sum', !sum && 'dt-out')} aria-hidden="true">
-            <span className="dt-sum-tag">Sum</span>
-            <span className="dt-sum-value">{formatSum(shownSum)}</span>
+        {/* The flow block: what the cell selection comes to, when it comes to
+            anything. It sits after the spacer, so it appears and disappears in
+            the gap without moving the buttons to its right. */}
+        {shownReading ? (
+          <div className={cx('dt-sum', !reading && 'dt-out')} aria-hidden="true">
+            <span className="dt-sum-tag">{shownReading.tag}</span>
+            <span className="dt-sum-value">{shownReading.value}</span>
+            {/* A rate's "5 of 8". The parentheses belong to the panel rather
+                than to the engine's string — they are punctuation around a
+                number, not part of it. */}
+            {shownReading.note ? (
+              <span className="dt-sum-note">({shownReading.note})</span>
+            ) : null}
           </div>
         ) : null}
 
@@ -1507,13 +1554,20 @@ export function DataTable(props: DataTableProps) {
           </button>
         </div>
 
-        <button
-          type="button"
-          className="dt-btn-secondary"
-          onClick={() => dispatch({ type: 'resetOrder', cols: defaultCols })}
-        >
-          Reset order
-        </button>
+        {/* PORT ADDITION: what each kind of selection should read as. It stands
+            where "Reset order" did — the flow block above is the only thing in
+            the toolbar it speaks for, and the two want to be read together.
+            It names the metric in force rather than a setting of its own, so it
+            tracks the selection: drag across counts and it reads Sum, drag
+            across statuses and it reads Success rate, with nothing to set in
+            between. */}
+        <MetricMenu
+          prefs={state.metrics}
+          value={showing}
+          inForce={inForce}
+          onPick={setMetric}
+        />
+
         <button
           type="button"
           className="dt-btn-primary"
