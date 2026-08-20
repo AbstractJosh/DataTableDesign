@@ -1,0 +1,195 @@
+/**
+ * Excel-style cell-range selection.
+ *
+ * The range is a rectangle over what is *on screen* — a row index inside the
+ * current page's rows and a column index inside `state.cols` — not a set of
+ * record ids. That is deliberate: a spreadsheet range means "these cells, where
+ * they are", so anything that reshuffles the page (a query, a sort, a page
+ * change, a reorder) drops it rather than dragging a stale rectangle along.
+ * The rule lives in `KEEPS_RANGE` in state.ts.
+ *
+ * Checkbox row selection is the opposite: keyed by id and kept across paging.
+ * The two are independent and can be live at the same time.
+ */
+import { COLUMN_LABELS, type ColumnKey, type DataTableRecord } from './types'
+
+/** A cell, addressed by its position on the page. */
+export interface CellRef {
+  row: number
+  col: number
+}
+
+/** Where the drag or the keyboard extension started, and where it is now. */
+export interface CellRange {
+  anchor: CellRef
+  focus: CellRef
+}
+
+/** The same range, normalised to inclusive bounds. */
+export interface RangeRect {
+  top: number
+  left: number
+  bottom: number
+  right: number
+}
+
+export function rangeRect(range: CellRange): RangeRect {
+  const { anchor, focus } = range
+  return {
+    top: Math.min(anchor.row, focus.row),
+    bottom: Math.max(anchor.row, focus.row),
+    left: Math.min(anchor.col, focus.col),
+    right: Math.max(anchor.col, focus.col),
+  }
+}
+
+/**
+ * Trim a rectangle to a grid that may have shrunk under it — a controlled host
+ * can drop records without any action passing through the reducer.
+ */
+export function clampRect(rect: RangeRect, rows: number, cols: number): RangeRect | null {
+  if (rows <= 0 || cols <= 0) return null
+  if (rect.top >= rows || rect.left >= cols) return null
+  return {
+    top: Math.max(0, rect.top),
+    left: Math.max(0, rect.left),
+    bottom: Math.min(rows - 1, rect.bottom),
+    right: Math.min(cols - 1, rect.right),
+  }
+}
+
+export function rangeSize(rect: RangeRect) {
+  const rows = rect.bottom - rect.top + 1
+  const cols = rect.right - rect.left + 1
+  return { rows, cols, cells: rows * cols }
+}
+
+/** What the live region says when a range changes or is copied. */
+export function describeRange(rect: RangeRect, cols: ColumnKey[], rowCount: number): string {
+  const size = rangeSize(rect)
+  if (size.cells === 1) {
+    return `${COLUMN_LABELS[cols[rect.left]]}, row ${rect.top + 1} of ${rowCount} selected.`
+  }
+  return `${size.rows} row${size.rows === 1 ? '' : 's'} by ${size.cols} column${
+    size.cols === 1 ? '' : 's'
+  } selected, ${size.cells} cells.`
+}
+
+const cellValue = (record: DataTableRecord, key: ColumnKey) => String(record[key] ?? '')
+
+/**
+ * Excel's own quoting rule: a value carrying a tab, a newline or a double quote
+ * is wrapped in quotes with its quotes doubled. None of the demo data needs it,
+ * real data will.
+ */
+function tsvCell(value: string): string {
+  if (!/["\t\r\n]/.test(value)) return value
+  return `"${value.replace(/"/g, '""')}"`
+}
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+/** Tab-separated, one line per row — what a spreadsheet reads as cells. */
+export function rangeText(
+  rows: DataTableRecord[],
+  cols: ColumnKey[],
+  rect: RangeRect,
+): string {
+  const lines: string[] = []
+  for (let r = rect.top; r <= rect.bottom; r += 1) {
+    const record = rows[r]
+    if (!record) continue
+    const cells: string[] = []
+    for (let c = rect.left; c <= rect.right; c += 1) {
+      cells.push(tsvCell(cellValue(record, cols[c])))
+    }
+    lines.push(cells.join('\t'))
+  }
+  return lines.join('\n')
+}
+
+/**
+ * The `text/html` flavour of the same rectangle. Sheets and Excel both prefer
+ * it over the plain text when it is on the clipboard, and it survives a paste
+ * into a rich-text editor as a real table.
+ */
+export function rangeHtml(
+  rows: DataTableRecord[],
+  cols: ColumnKey[],
+  rect: RangeRect,
+): string {
+  const body: string[] = []
+  for (let r = rect.top; r <= rect.bottom; r += 1) {
+    const record = rows[r]
+    if (!record) continue
+    const cells: string[] = []
+    for (let c = rect.left; c <= rect.right; c += 1) {
+      cells.push(`<td>${escapeHtml(cellValue(record, cols[c]))}</td>`)
+    }
+    body.push(`<tr>${cells.join('')}</tr>`)
+  }
+  return `<table><tbody>${body.join('')}</tbody></table>`
+}
+
+/**
+ * Three routes to the clipboard, in descending order of fidelity: the async API
+ * with both flavours, the async API with text only, and the old
+ * selection + `execCommand` dance for insecure contexts (a plain `http://`
+ * intranet host, where `navigator.clipboard` is not exposed at all).
+ */
+export async function writeClipboard(text: string, html: string): Promise<boolean> {
+  const clipboard = navigator?.clipboard
+
+  if (clipboard?.write && typeof ClipboardItem === 'function') {
+    try {
+      await clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        }),
+      ])
+      return true
+    } catch {
+      // a browser that refuses the two-flavour write still takes plain text
+    }
+  }
+
+  if (clipboard?.writeText) {
+    try {
+      await clipboard.writeText(text)
+      return true
+    } catch {
+      // fall through to the legacy path
+    }
+  }
+
+  return legacyCopy(text)
+}
+
+function legacyCopy(text: string): boolean {
+  const doc = document
+  if (typeof doc.execCommand !== 'function') return false
+
+  const area = doc.createElement('textarea')
+  area.value = text
+  // off-screen but still selectable; `display: none` would not be
+  area.setAttribute('aria-hidden', 'true')
+  area.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0'
+  doc.body.appendChild(area)
+
+  const previous = doc.activeElement as HTMLElement | null
+  area.select()
+  let ok = false
+  try {
+    ok = doc.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  area.remove()
+  previous?.focus?.()
+  return ok
+}
