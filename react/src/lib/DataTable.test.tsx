@@ -5,12 +5,13 @@
  * synchronously; jsdom never fires `animationend`, and the animation's own
  * fallback timer is exercised separately.
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import { DataTable } from './DataTable'
 import { createDemoRecords } from './demoData'
+import { COLUMN_DRAG_MIME } from './FilterDock'
 import type { DataTableRecord } from './types'
 
 function setup(props: Partial<React.ComponentProps<typeof DataTable>> = {}) {
@@ -27,13 +28,64 @@ const rowNames = () =>
 const byTitle = (title: string, root: ParentNode = document) =>
   root.querySelector(`[title="${title}"]`) as HTMLElement
 
-/** The status filter is a dropdown: open it, then take the option. */
-const filterButton = () => screen.getByRole('button', { name: /^Status/ })
+type User = ReturnType<typeof userEvent.setup>
 
-const pickFilter = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
-  await user.click(filterButton())
-  await user.click(screen.getByRole('option', { name }))
+/* ---- the filter dock ---------------------------------------------- *
+ * PORT ADDITION. The toolbar's single "Status" dropdown is gone; filtering is
+ * a strip of chips between the toolbar and the table, one per column. Inside
+ * the dock `/Status/` matches the chip's own button *and* its "Remove the
+ * Status filter" button, so these helpers reach for the class names the dock's
+ * markup contract fixes rather than for accessible names.
+ * ------------------------------------------------------------------- */
+
+const dock = () => screen.getByRole('region', { name: 'Filter dock' })
+
+/** The chip for a column, by the label in its tag. Undefined when there is none. */
+const chip = (label: string) =>
+  Array.from(dock().querySelectorAll('.dt-chip')).find(
+    (el) => el.querySelector('.dt-chip-tag')?.textContent === label,
+  ) as HTMLElement
+
+const chips = () => dock().querySelectorAll('.dt-chip')
+const chipButton = (label: string) => chip(label).querySelector('.dt-chip-btn') as HTMLElement
+/** The chip's summary text — "Any" while it has no operand yet. */
+const chipValue = (label: string) => chip(label).querySelector('.dt-chip-value')?.textContent
+const popup = (label: string) => chip(label).querySelector('.dt-chip-pop') as HTMLElement
+/** The operator dropdown inside a chip's popup: a plain FilterMenu. */
+const opButton = (label: string) => popup(label).querySelector('.dt-filter-btn') as HTMLElement
+
+/**
+ * The head of the chain, which is also the door into it. Matched exactly: the
+ * column grips name this button in their own aria-label, as the keyboard route
+ * into the dock, so a substring match finds seven buttons.
+ */
+const addButton = () => screen.getByRole('button', { name: 'Add filter' })
+/** The revert. Always on the strip; disabled until there is something to revert. */
+const revertButton = () =>
+  screen.getByRole('button', { name: 'Revert — remove every filter' })
+
+/** The pointer-free door into the dock; the drop gesture is covered separately. */
+const addFilter = async (user: User, label: string) => {
+  await user.click(addButton())
+  await user.click(screen.getByRole('option', { name: label }))
 }
+
+/** Tick or untick one option of an enum chip. Its popup must be open. */
+const tick = async (user: User, label: string, option: string) => {
+  await user.click(within(popup(label)).getByRole('option', { name: option }))
+}
+
+/** Take an operator by the words it reads as, not by its stored key. */
+const pickOp = async (user: User, label: string, op: string) => {
+  await user.click(opButton(label))
+  await user.click(screen.getByRole('option', { name: op }))
+}
+
+/** The data columns, left to right. `email` is not one of them any more. */
+const columnKeys = () =>
+  Array.from(document.querySelectorAll('th[data-key]')).map((th) => th.getAttribute('data-key'))
+
+const DEFAULT_KEYS = ['name', 'date', 'status', 'solvedCases', 'favouriteSeason', 'address']
 
 const rowsSlider = () => screen.getByLabelText('Rows per page') as HTMLInputElement
 
@@ -66,7 +118,7 @@ describe('frame', () => {
 })
 
 describe('search and filter', () => {
-  it('filters across name, email, address and mobile, case-insensitively', async () => {
+  it('filters across name, email and address, case-insensitively', async () => {
     const { user } = setup()
     await user.type(screen.getByLabelText('Search records'), 'AMELIA')
     expect(rowNames()).toEqual(['Amelia Hart'])
@@ -80,6 +132,15 @@ describe('search and filter', () => {
     expect(rowNames()).toEqual(['Tunc Yanik'])
   })
 
+  it('still searches the email, which is a detail-pane field now', async () => {
+    const { user } = setup()
+    // `favouriteSeason` took the column; `email` stayed on the record, so the
+    // query keeps reading it (see the derive in DataTable).
+    expect(document.querySelector('th[data-key="email"]')).toBeNull()
+    await user.type(screen.getByLabelText('Search records'), 'tyanik@yopmail')
+    expect(rowNames()).toEqual(['Tunc Yanik'])
+  })
+
   it('resets to page 1 when the query changes', async () => {
     const { user } = setup()
     await user.click(screen.getByRole('button', { name: '3' }))
@@ -90,25 +151,32 @@ describe('search and filter', () => {
 
   it('filters by status and combines with the query', async () => {
     const { user } = setup()
-    await pickFilter(user, 'Failed')
+    await addFilter(user, 'Status')
+    await tick(user, 'Status', 'Failed')
     expect(rowNames()).toEqual(['Marcus Reed', 'Clara Whitfield', 'Julien Moreau'])
     await user.type(screen.getByLabelText('Search records'), 'clara')
     expect(rowNames()).toEqual(['Clara Whitfield'])
   })
 
-  it('names the active filter on the button and marks its option selected', async () => {
+  it('names the active filter on its chip and marks the ticked option', async () => {
     const { user } = setup()
-    expect(filterButton()).toHaveTextContent('All')
+    await addFilter(user, 'Status')
+    expect(chipValue('Status')).toBe('Any')
+    expect(chip('Status')).toHaveClass('dt-idle')
 
-    await pickFilter(user, 'Success')
-    expect(filterButton()).toHaveTextContent('Success')
+    await tick(user, 'Status', 'Success')
+    expect(chipValue('Status')).toBe('Success')
+    expect(chip('Status')).not.toHaveClass('dt-idle')
 
-    await user.click(filterButton())
-    expect(screen.getByRole('option', { name: 'Success' })).toHaveAttribute(
+    const options = within(popup('Status'))
+    expect(options.getByRole('option', { name: 'Success' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
-    expect(screen.getByRole('option', { name: 'All' })).toHaveAttribute('aria-selected', 'false')
+    expect(options.getByRole('option', { name: 'Failed' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    )
   })
 
   it('shows the empty state when nothing matches', async () => {
@@ -116,6 +184,327 @@ describe('search and filter', () => {
     await user.type(screen.getByLabelText('Search records'), 'zzzzz')
     expect(screen.getByText('No records match')).toBeInTheDocument()
     expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 0 of 0 entries')
+  })
+})
+
+/**
+ * PORT ADDITION: the filter dock. The prototype had one status dropdown; the
+ * dock takes any column as a chip and ANDs them. The pointer gesture that fills
+ * it lives in its own block below — this one is the state machine behind the
+ * chips, reached through the chain's head block — "Add filter" — which is the
+ * same door with a keyboard on it rather than a lesser fallback.
+ */
+describe('filter dock', () => {
+  it('starts empty, prompting for the gesture that fills it', () => {
+    setup()
+    expect(chips()).toHaveLength(0)
+    expect(within(dock()).getByText(/Drag a column here/)).toBeInTheDocument()
+    // The revert holds its place either way — it moved the head block about
+    // when it was rendered conditionally — so it is here, greyed out, rather
+    // than absent.
+    expect(revertButton()).toBeDisabled()
+  })
+
+  it('adds a filter from the keyboard and lands inside the open popup', async () => {
+    const { user } = setup()
+    addButton().focus()
+
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('option', { name: 'Name' })).toHaveFocus()
+
+    await user.keyboard('{ArrowDown}{ArrowDown}')
+    expect(screen.getByRole('option', { name: 'Status' })).toHaveFocus()
+
+    await user.keyboard('{Enter}')
+    expect(screen.queryByRole('listbox', { name: 'Add a column filter' })).toBeNull()
+    // The table has not changed — an inert chip filters nothing — so the caret
+    // arriving on the first operand is the only thing that says it worked.
+    expect(popup('Status')).toBeInTheDocument()
+    expect(within(popup('Status')).getByRole('option', { name: 'Success' })).toHaveFocus()
+  })
+
+  it('a freshly added chip filters nothing', async () => {
+    const { user } = setup()
+    const before = rowNames()
+
+    await addFilter(user, 'Status')
+
+    // The rule the whole dock rests on (isActive in filters.ts): a condition
+    // with no operand is skipped, so the table stands still between the drop
+    // and the first tick. Going blank here would read as a broken drop.
+    expect(rowNames()).toEqual(before)
+    expect(stat('Matching')).toBe('17')
+    expect(chipValue('Status')).toBe('Any')
+    expect(chip('Status')).toHaveClass('dt-idle')
+  })
+
+  it('ticks an enum as a union, not an intersection', async () => {
+    const { user } = setup({ rowsPerPage: 16 })
+    await addFilter(user, 'Status')
+
+    await tick(user, 'Status', 'Success')
+    expect(stat('Matching')).toBe('8')
+
+    await tick(user, 'Status', 'Failed')
+    expect(stat('Matching')).toBe('11') // 8 + 3, not the 0 an AND would give
+    // and the summary reads in ENUM_OPTIONS order, not tick order
+    expect(chipValue('Status')).toBe('Success, Failed')
+
+    const pills = Array.from(document.querySelectorAll('td[data-key="status"] .dt-pill'))
+    expect(new Set(pills.map((el) => el.textContent))).toEqual(new Set(['Success', 'Failed']))
+  })
+
+  it('combines two chips with AND — narrowing, not emptying', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    await tick(user, 'Status', 'Success')
+    expect(stat('Matching')).toBe('8')
+
+    // This pairing is the demo the whole feature exists for, and demoData holds
+    // the overlap open on purpose.
+    await addFilter(user, 'Favourite season')
+    await tick(user, 'Favourite season', 'Spring')
+    expect(rowNames()).toEqual(['Ethan Noah', 'Naomi Castillo', 'Victor Ilyin'])
+    expect(stat('Matching')).toBe('3')
+  })
+
+  it('filters a text column with contains, ignoring case', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Name')
+    // `contains` leads OPS_FOR_TYPE.text, so the chip opens on it already
+    await user.type(screen.getByLabelText('Name value'), 'HART')
+
+    expect(rowNames()).toEqual(['Amelia Hart'])
+    // the chip does not shout — the uppercasing is CSS
+    expect(chipValue('Name')).toBe('contains HART')
+  })
+
+  it('filters a number column with between, either way round', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Solved cases')
+    await pickOp(user, 'Solved cases', 'is between')
+
+    const from = () => screen.getByLabelText('Solved cases range start')
+    const to = () => screen.getByLabelText('Solved cases range end')
+
+    await user.type(from(), '100')
+    // one end alone is not half a range, it is nothing
+    expect(stat('Matching')).toBe('17')
+
+    await user.type(to(), '200')
+    expect(rowNames()).toEqual(['Tunc Yanik', 'Daniel Osei', 'Hana Sato', 'Victor Ilyin'])
+    expect(chipValue('Solved cases')).toBe('is between 100 and 200')
+
+    // typed backwards it is still a range: the operands are swapped, not refused
+    await user.clear(from())
+    await user.type(from(), '200')
+    await user.clear(to())
+    await user.type(to(), '100')
+    expect(rowNames()).toEqual(['Tunc Yanik', 'Daniel Osei', 'Hana Sato', 'Victor Ilyin'])
+  })
+
+  it('filters a date column on parsed dates, not on text order', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Date')
+    await pickOp(user, 'Date', 'is after')
+
+    // `<input type="date">` has no keyboard path through its segments in jsdom,
+    // and hands back ISO — which parseTableDate takes alongside the record's
+    // "18 March, 2026" shape.
+    fireEvent.change(screen.getByLabelText('Date value'), { target: { value: '2026-03-18' } })
+
+    // "02 April" sorts *below* "18 March" as text, and the column's sort still
+    // does exactly that (a documented handoff gotcha); the filter does not.
+    expect(rowNames()).toEqual([
+      'Tunc Yanik', 'Priya Anand', 'Tomas Berger', 'Julien Moreau', 'Samir Haddad',
+    ])
+  })
+
+  it('removing a chip gives the rows back', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    await tick(user, 'Status', 'Failed')
+    expect(stat('Matching')).toBe('3')
+
+    await user.click(screen.getByRole('button', { name: 'Remove the Status filter' }))
+    expect(chip('Status')).toBeUndefined()
+    expect(stat('Matching')).toBe('17')
+  })
+
+  // The button that takes the press unmounts itself, so without a deliberate
+  // hand-off focus falls to <body> — the top of the host's document, a long way
+  // back for anyone who arrived here by keyboard.
+  it('puts focus somewhere deliberate when a chip goes away', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    await addFilter(user, 'Name')
+
+    // the chip that slid into the gap
+    await user.click(screen.getByRole('button', { name: 'Remove the Status filter' }))
+    expect(document.activeElement).toBe(chipButton('Name'))
+
+    // the last one out lands on the door back in
+    await user.click(screen.getByRole('button', { name: 'Remove the Name filter' }))
+    expect(document.activeElement).toBe(addButton())
+  })
+
+  it('Revert takes several chips at once', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    await tick(user, 'Status', 'Success')
+    await addFilter(user, 'Favourite season')
+    await tick(user, 'Favourite season', 'Spring')
+    expect(stat('Matching')).toBe('3')
+
+    await user.click(revertButton())
+    expect(chips()).toHaveLength(0)
+    expect(stat('Matching')).toBe('17')
+    expect(within(dock()).getByText(/Drag a column here/)).toBeInTheDocument()
+    // The revert goes disabled once the last chip is gone, which drops focus
+    // exactly as unmounting would, so it hands focus on for the same reason the
+    // × does.
+    expect(document.activeElement).toBe(addButton())
+  })
+
+  it('clearing a chip empties its operands but keeps the chip', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    const clear = () => within(popup('Status')).getByRole('button', { name: 'Clear' })
+    // nothing to empty yet
+    expect(clear()).toBeDisabled()
+
+    await tick(user, 'Status', 'Success')
+    await tick(user, 'Status', 'Failed')
+    expect(chipValue('Status')).toBe('Success, Failed')
+
+    // the reducer has no bulk clear, so this untoggles each ticked option in
+    // turn — every one of them, not just the first
+    await user.click(clear())
+    expect(chips()).toHaveLength(1)
+    expect(chipValue('Status')).toBe('Any')
+    expect(chip('Status')).toHaveClass('dt-idle')
+    expect(stat('Matching')).toBe('17')
+  })
+
+  it('Done closes the popup and hands focus back to the chip', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Favourite season')
+    await tick(user, 'Favourite season', 'Winter')
+
+    await user.click(within(popup('Favourite season')).getByRole('button', { name: 'Done' }))
+    expect(chip('Favourite season').querySelector('.dt-chip-pop')).toBeNull()
+    expect(chipButton('Favourite season')).toHaveFocus()
+    expect(chipValue('Favourite season')).toBe('Winter')
+  })
+
+  it('lists a column that already has a chip, but will not add it twice', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+
+    await user.click(addButton())
+    const taken = screen.getByRole('option', { name: 'Status' })
+    // listed rather than dropped, so the picker's order always matches the
+    // table's and never shuffles under the arrows
+    expect(taken).toHaveAttribute('aria-disabled', 'true')
+
+    await user.click(taken)
+    expect(chips()).toHaveLength(1)
+    // a dead row commits to nothing at all, so the list is still standing
+    expect(screen.getByRole('listbox', { name: 'Add a column filter' })).toBeInTheDocument()
+  })
+
+  it('a filter change resets to page 1; adding an inert chip does not', async () => {
+    const { user } = setup({ rowsPerPage: 4 })
+    await user.click(screen.getByRole('button', { name: '4' }))
+
+    await addFilter(user, 'Status')
+    // nothing about the result set has changed yet, so the page the user was
+    // reading is still the page they wanted
+    expect(screen.getByRole('button', { name: '4' })).toHaveAttribute('aria-current', 'page')
+
+    await tick(user, 'Status', 'Success')
+    // 8 matches over 2 pages, so a bare clamp would have settled on page 2
+    expect(screen.getByRole('button', { name: '1' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('a filter change backs out of a pending delete, an armed row and a cell range', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    const reopen = async () => user.click(chipButton('Status'))
+
+    await user.click(screen.getAllByRole('button', { name: 'Delete record' })[0])
+    expect(screen.getByRole('button', { name: 'Confirm delete' })).toBeInTheDocument()
+    await reopen()
+    await tick(user, 'Status', 'Success')
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).toBeNull()
+
+    // Any *press* outside an open editor commits and closes it first (the
+    // document capture in DataTable), so the armed row is the half of
+    // `cleared()` a pointer can still be seen to take: `picking` survives the
+    // press that reopens the popup, and only the tick clears it.
+    await user.click(screen.getAllByRole('button', { name: 'Edit record' })[0])
+    await user.click(byTitle('Edit Name'))
+    expect(screen.getByLabelText('Edit Name')).toBeInTheDocument()
+    await reopen()
+    expect(byTitle('Edit Name')).toBeInTheDocument()
+    await tick(user, 'Status', 'Failed')
+    expect(screen.queryByLabelText('Edit Name')).toBeNull()
+    expect(byTitle('Edit Name')).toBeNull()
+
+    const cell = (row: number, col: number) =>
+      document.querySelector(`td[data-row="${row}"][data-col="${col}"]`) as HTMLElement
+    fireEvent.mouseDown(cell(0, 0))
+    fireEvent.mouseOver(cell(1, 1))
+    fireEvent.mouseUp(document)
+    expect(document.querySelectorAll('td.dt-range')).toHaveLength(4)
+    await reopen()
+    await tick(user, 'Status', 'Failed')
+    expect(document.querySelectorAll('td.dt-range')).toHaveLength(0)
+  })
+
+  it('Escape closes a chip popup and hands focus back, leaving the table alone', async () => {
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'New record' }))
+    await addFilter(user, 'Status')
+    expect(popup('Status')).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+    expect(chip('Status').querySelector('.dt-chip-pop')).toBeNull()
+    expect(chipButton('Status')).toHaveFocus()
+    // the root's own Escape chain never saw the key
+    expect(document.querySelector('tbody[data-id="__draft__"]')).toBeInTheDocument()
+  })
+
+  it('a press outside closes the popup, leaving the condition alone', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Status')
+    await tick(user, 'Status', 'Failed')
+
+    await user.click(screen.getByRole('heading', { name: 'Data table' }))
+    expect(chip('Status').querySelector('.dt-chip-pop')).toBeNull()
+    expect(chipValue('Status')).toBe('Failed')
+    expect(stat('Matching')).toBe('3')
+  })
+
+  it('offers the empty state when a chip filters everything out', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Name')
+    await user.type(screen.getByLabelText('Name value'), 'zzzzz')
+
+    expect(screen.getByText('No records match')).toBeInTheDocument()
+    // the copy names the dock now: the search field is no longer the only
+    // thing that can empty the table
+    expect(screen.getByText(/loosen a filter in the dock above/)).toBeInTheDocument()
+  })
+
+  it('the search and the chips narrow together', async () => {
+    const { user } = setup()
+    await addFilter(user, 'Favourite season')
+    await tick(user, 'Favourite season', 'Summer')
+    expect(stat('Matching')).toBe('5') // Tunc plus four generated records
+
+    await user.type(screen.getByLabelText('Search records'), 'eskisehir')
+    expect(rowNames()).toEqual(['Tunc Yanik'])
   })
 })
 
@@ -214,79 +603,100 @@ describe('selection', () => {
   })
 })
 
-describe('status filter menu', () => {
+/**
+ * The select-only combobox that used to be the toolbar's status dropdown. Its
+ * one caller now is the operator picker inside a filter chip's popup, so the
+ * keyboard contract is exercised there — same component, same keys, and the
+ * dock's own lists are held to it too.
+ */
+describe('operator menu', () => {
+  /** A text column's operators, in the words OP_LABELS gives them. */
+  const TEXT_OPS = ['contains', 'does not contain', 'is', 'starts with']
   const options = () => screen.getAllByRole('option').map((el) => el.textContent)
 
-  it('opens with every filter in it and closes on a pick', async () => {
+  /** A Name chip with its popup open — nothing else on screen holds options. */
+  const withNameChip = async () => {
     const { user } = setup()
-    expect(screen.queryByRole('listbox')).toBeNull()
-    expect(filterButton()).toHaveAttribute('aria-expanded', 'false')
+    await addFilter(user, 'Name')
+    return user
+  }
 
-    await user.click(filterButton())
-    expect(filterButton()).toHaveAttribute('aria-expanded', 'true')
-    expect(options()).toEqual(['All', 'Success', 'In progress', 'Failed'])
-
-    await user.click(screen.getByRole('option', { name: 'In progress' }))
+  it('opens with every operator in it and closes on a pick', async () => {
+    const user = await withNameChip()
     expect(screen.queryByRole('listbox')).toBeNull()
-    expect(filterButton()).toHaveTextContent('In progress')
-    expect(filterButton()).toHaveFocus()
+    expect(opButton('Name')).toHaveAttribute('aria-expanded', 'false')
+
+    await user.click(opButton('Name'))
+    expect(opButton('Name')).toHaveAttribute('aria-expanded', 'true')
+    expect(options()).toEqual(TEXT_OPS)
+
+    await user.click(screen.getByRole('option', { name: 'starts with' }))
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(opButton('Name')).toHaveTextContent('starts with')
+    expect(opButton('Name')).toHaveFocus()
   })
 
   it('a second press on the button closes it again', async () => {
-    const { user } = setup()
-    await user.click(filterButton())
-    await user.click(filterButton())
+    const user = await withNameChip()
+    await user.click(opButton('Name'))
+    await user.click(opButton('Name'))
     expect(screen.queryByRole('listbox')).toBeNull()
   })
 
   it('opens on ArrowDown with the current value focused, and walks the list', async () => {
-    const { user } = setup()
-    filterButton().focus()
+    const user = await withNameChip()
+    opButton('Name').focus()
 
     await user.keyboard('{ArrowDown}')
-    expect(screen.getByRole('option', { name: 'All' })).toHaveFocus()
+    expect(screen.getByRole('option', { name: 'contains' })).toHaveFocus()
 
     await user.keyboard('{ArrowDown}{ArrowDown}')
-    expect(screen.getByRole('option', { name: 'In progress' })).toHaveFocus()
+    expect(screen.getByRole('option', { name: 'is' })).toHaveFocus()
 
     await user.keyboard('{End}')
-    expect(screen.getByRole('option', { name: 'Failed' })).toHaveFocus()
+    expect(screen.getByRole('option', { name: 'starts with' })).toHaveFocus()
 
     await user.keyboard('{Enter}')
-    expect(filterButton()).toHaveTextContent('Failed')
-    expect(rowNames()).toEqual(['Marcus Reed', 'Clara Whitfield', 'Julien Moreau'])
+    expect(opButton('Name')).toHaveTextContent('starts with')
+
+    await user.type(screen.getByLabelText('Name value'), 'm')
+    expect(rowNames()).toEqual(['Marcus Reed', 'Mia Donnelly'])
   })
 
   it('stops at the ends of the list', async () => {
-    const { user } = setup()
-    await user.click(filterButton())
+    const user = await withNameChip()
+    await user.click(opButton('Name'))
     await user.keyboard('{ArrowUp}{ArrowUp}')
-    expect(screen.getByRole('option', { name: 'All' })).toHaveFocus()
+    expect(screen.getByRole('option', { name: 'contains' })).toHaveFocus()
   })
 
   it('Escape closes it without picking, and gives the button back its focus', async () => {
-    const { user } = setup()
-    await user.click(filterButton())
+    const user = await withNameChip()
+    await user.click(opButton('Name'))
     await user.keyboard('{ArrowDown}{Escape}')
 
     expect(screen.queryByRole('listbox')).toBeNull()
-    expect(filterButton()).toHaveTextContent('All')
-    expect(filterButton()).toHaveFocus()
+    expect(opButton('Name')).toHaveTextContent('contains')
+    expect(opButton('Name')).toHaveFocus()
   })
 
   it('that Escape does not also unwind the table behind it', async () => {
     const { user } = setup()
     await user.click(screen.getByRole('button', { name: 'New record' }))
-    await user.click(filterButton())
+    await addFilter(user, 'Name')
+    await user.click(opButton('Name'))
     await user.keyboard('{Escape}')
 
     expect(screen.queryByRole('listbox')).toBeNull()
+    // one level only: the chip's own popup is still open behind the list, and
+    // the draft never heard the key
+    expect(popup('Name')).toBeInTheDocument()
     expect(document.querySelector('tbody[data-id="__draft__"]')).toBeInTheDocument()
   })
 
   it('a press outside closes it', async () => {
-    const { user } = setup()
-    await user.click(filterButton())
+    const user = await withNameChip()
+    await user.click(opButton('Name'))
     await user.click(screen.getByLabelText('Search records'))
     expect(screen.queryByRole('listbox')).toBeNull()
   })
@@ -375,6 +785,18 @@ describe('expand and collapse', () => {
 
     await user.click(toggles[0])
     expect(screen.queryByText('Record ID')).not.toBeInTheDocument()
+  })
+
+  it('shows the email in the pane, where the column used to be', async () => {
+    const { user } = setup()
+    await user.click(screen.getAllByRole('button', { name: 'Toggle details' })[0])
+
+    // PORT ADDITION: `favouriteSeason` took the column; email moved down here
+    // and shares row 1 with the other short values.
+    expect(screen.getByText('Email', { selector: '.dt-pane-label' })).toBeInTheDocument()
+    expect(screen.getByText('tyanik@yopmail.com')).toBeInTheDocument()
+    // and the note keeps the rest of row 2, so no cell is left ragged
+    expect(document.querySelector('.dt-pane-rest .dt-pane-label')).toHaveTextContent('Note')
   })
 
   it('lets several rows stay open at once', async () => {
@@ -507,25 +929,43 @@ describe('inline editing', () => {
   it('commits when focus leaves the editor', async () => {
     const { user } = setup()
     await armFirstRow(user)
-    await user.click(byTitle('Edit Email ID'))
-    const input = screen.getByLabelText('Edit Email ID')
+    await user.click(byTitle('Edit Address'))
+    const input = screen.getByLabelText('Edit Address')
     await user.clear(input)
-    await user.type(input, 'new@example.com')
+    await user.type(input, '9 Kestrel Way, Ankara')
     await user.tab()
-    expect(screen.getByText('new@example.com')).toBeInTheDocument()
+    expect(screen.getByText('9 Kestrel Way, Ankara')).toBeInTheDocument()
   })
 
   it('edits the status through the three-way picker and returns to picking', async () => {
     const { user } = setup()
     await armFirstRow(user)
     await user.click(byTitle('Edit Status'))
-    const picker = screen.getByRole('group', { name: 'Edit status' })
+    const picker = screen.getByRole('group', { name: 'Edit Status' })
     await user.click(within(picker).getByRole('button', { name: 'Failed' }))
 
     const row = screen.getByText('Tunc Yanik', { selector: '.dt-name-text' }).closest('tr')!
     expect(row.querySelector('.dt-pill')).toHaveTextContent('Failed')
     expect(row.querySelector('.dt-pill')).toHaveClass('dt-failed')
     expect(byTitle('Edit Status')).toBeInTheDocument()
+  })
+
+  it('edits the favourite season through that same picker, without a pill', async () => {
+    const { user } = setup()
+    await armFirstRow(user)
+    // PORT ADDITION: the picker is generic over ENUM_OPTIONS now, so the second
+    // enum column gets it without naming a column anywhere.
+    await user.click(byTitle('Edit Favourite season'))
+    const picker = screen.getByRole('group', { name: 'Edit Favourite season' })
+    await user.click(within(picker).getByRole('button', { name: 'Autumn' }))
+
+    const row = screen.getByText('Tunc Yanik', { selector: '.dt-name-text' }).closest('tr')!
+    const cell = row.querySelector('td[data-key="favouriteSeason"]')!
+    expect(cell).toHaveTextContent('Autumn')
+    // the pill's three colours mean success / in progress / failed; a season
+    // painted the same way would claim a meaning it does not have
+    expect(cell.querySelector('.dt-pill')).toBeNull()
+    expect(byTitle('Edit Favourite season')).toBeInTheDocument()
   })
 
   it('un-arms the row when the pencil is clicked again', async () => {
@@ -593,6 +1033,10 @@ describe('draft row', () => {
       owner: 'Unassigned',
       activity: 'Just now',
       plan: 'Standard',
+      // the draft collects the visible columns, so the season comes from the
+      // row and the email — a detail-pane field now — is filled in later
+      favouriteSeason: 'Spring',
+      email: '',
     })
   })
 
@@ -618,13 +1062,31 @@ describe('draft row', () => {
   it('survives a status change without leaving the draft', async () => {
     const { user } = setup()
     await user.click(newRecord())
-    await user.click(byTitle('Set status'))
+    await user.click(byTitle('Set Status'))
     await user.click(
-      within(screen.getByRole('group', { name: 'Edit status' })).getByRole('button', {
+      within(screen.getByRole('group', { name: 'Edit Status' })).getByRole('button', {
         name: 'Success',
       }),
     )
-    expect(byTitle('Set status')).toHaveTextContent('Success')
+    expect(byTitle('Set Status')).toHaveTextContent('Success')
+    expect(screen.getByLabelText('Name')).toBeInTheDocument()
+  })
+
+  it('opens on a season and takes no email', async () => {
+    const { user } = setup()
+    await user.click(newRecord())
+    // Both enum cells open on a value: the draft's picker edits in place, it
+    // has no empty state to show.
+    expect(byTitle('Set Favourite season')).toHaveTextContent('Spring')
+    expect(screen.queryByLabelText('Email ID')).toBeNull()
+
+    await user.click(byTitle('Set Favourite season'))
+    await user.click(
+      within(screen.getByRole('group', { name: 'Edit Favourite season' })).getByRole('button', {
+        name: 'Winter',
+      }),
+    )
+    expect(byTitle('Set Favourite season')).toHaveTextContent('Winter')
     expect(screen.getByLabelText('Name')).toBeInTheDocument()
   })
 })
@@ -669,17 +1131,17 @@ describe('reordering', () => {
 
   it('moves a column with Alt+ArrowRight and Reset order puts it back', async () => {
     const { user } = setup()
-    const keys = () =>
-      Array.from(document.querySelectorAll('th[data-key]')).map((th) => th.getAttribute('data-key'))
-    expect(keys()).toEqual(['name', 'date', 'status', 'mobile', 'email', 'address'])
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
 
     const grip = screen.getByRole('button', { name: /^Reorder Name column/ })
     grip.focus()
     await user.keyboard('{Alt>}{ArrowRight}{/Alt}')
-    expect(keys()).toEqual(['date', 'name', 'status', 'mobile', 'email', 'address'])
+    expect(columnKeys()).toEqual([
+      'date', 'name', 'status', 'solvedCases', 'favouriteSeason', 'address',
+    ])
 
     await user.click(screen.getByRole('button', { name: 'Reset order' }))
-    expect(keys()).toEqual(['name', 'date', 'status', 'mobile', 'email', 'address'])
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
   })
 
   it('Reset order also clears the sort', async () => {
@@ -718,14 +1180,14 @@ describe('html5 drag', () => {
 
   it('splices a column into the position it is dragged over', () => {
     setup()
-    const keys = () =>
-      Array.from(document.querySelectorAll('th[data-key]')).map((el) => el.getAttribute('data-key'))
 
     fireEvent.dragStart(colGrip('name'), dataTransfer())
     expect(th('name')).toHaveClass('dt-dragging')
 
-    fireEvent.dragEnter(th('mobile'))
-    expect(keys()).toEqual(['date', 'status', 'mobile', 'name', 'email', 'address'])
+    fireEvent.dragEnter(th('solvedCases'))
+    expect(columnKeys()).toEqual([
+      'date', 'status', 'solvedCases', 'name', 'favouriteSeason', 'address',
+    ])
 
     fireEvent.dragEnd(th('name'))
     expect(th('name')).not.toHaveClass('dt-dragging')
@@ -785,6 +1247,178 @@ describe('html5 drag', () => {
       expect.any(Number),
       expect.any(Number),
     )
+  })
+})
+
+/**
+ * PORT ADDITION: dragging a column out of the header and into the filter dock.
+ *
+ * jsdom has no drag and drop — no pointer, no drag image, and no DataTransfer
+ * at all — so the gesture is driven event by event against a stub that records
+ * what the grip writes into it. What is under test here is the state
+ * transition; the pointer half of it is verified by hand in a browser.
+ */
+describe('the dock drop', () => {
+  const th = (key: string) => document.querySelector(`th[data-key="${key}"]`) as HTMLElement
+  const colGrip = (key: string) => th(key).querySelector('.dt-grip') as HTMLElement
+
+  /** Enough of a DataTransfer for the grip to write to and the dock to read. */
+  const transfer = () => {
+    const held: Record<string, string> = {}
+    return {
+      effectAllowed: '',
+      dropEffect: '',
+      types: [] as string[],
+      setData(type: string, value: string) {
+        held[type] = value
+        this.types.push(type)
+      },
+      getData: (type: string) => held[type] ?? '',
+    }
+  }
+
+  it('arms on dragstart and turns the dropped column into a chip', () => {
+    setup()
+    const dt = transfer()
+
+    fireEvent.dragStart(colGrip('status'), { dataTransfer: dt })
+    // the private MIME type, so a column drag is never mistaken for the text
+    // the browser lets you drag out of a cell
+    expect(dt.getData(COLUMN_DRAG_MIME)).toBe('status')
+    // "copyMove": the header reorder is the move, the dock drop is the copy —
+    // a dropEffect outside effectAllowed is reset to none and the drop refused
+    expect(dt.effectAllowed).toBe('copyMove')
+    expect(dock()).toHaveClass('dt-armed')
+
+    fireEvent.dragEnter(dock(), { dataTransfer: dt })
+    expect(dock()).toHaveClass('dt-over')
+
+    fireEvent.drop(dock(), { dataTransfer: dt })
+    fireEvent.dragEnd(colGrip('status'))
+
+    expect(chip('Status')).toBeInTheDocument()
+    expect(dock()).not.toHaveClass('dt-over')
+    expect(dock()).not.toHaveClass('dt-armed')
+    // additive, not a pivot shelf: the header keeps the column it handed over
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
+  })
+
+  it('undoes the reordering the drag did on its way up to the dock', () => {
+    setup()
+    const dt = transfer()
+
+    fireEvent.dragStart(colGrip('name'), { dataTransfer: dt })
+    // the trip out of the header crosses its neighbours, and every crossing
+    // moves the column one place along
+    fireEvent.dragEnter(th('status'))
+    expect(columnKeys()).toEqual([
+      'date', 'status', 'name', 'solvedCases', 'favouriteSeason', 'address',
+    ])
+
+    fireEvent.drop(dock(), { dataTransfer: dt })
+    fireEvent.dragEnd(th('name'))
+
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
+    expect(chip('Name')).toBeInTheDocument()
+  })
+
+  it('that restore keeps the sort — it is setColumnOrder, not Reset order', () => {
+    setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Date' }))
+    const dt = transfer()
+
+    fireEvent.dragStart(colGrip('name'), { dataTransfer: dt })
+    fireEvent.dragEnter(th('status'))
+    fireEvent.drop(dock(), { dataTransfer: dt })
+    fireEvent.dragEnd(th('name'))
+
+    expect(screen.getByRole('button', { name: 'Sort by Date' }).closest('th')).toHaveAttribute(
+      'aria-sort',
+      'ascending',
+    )
+  })
+
+  /**
+   * jsdom has no `DragEvent`, so testing-library falls back to plain `Event`
+   * and the `relatedTarget` in an init is dropped on the floor (`dataTransfer`
+   * is special-cased back on; `relatedTarget` is not). Build the event and hang
+   * the property on it by hand instead.
+   */
+  const dragLeaveTowards = (target: Node | null) => {
+    const event = createEvent.dragLeave(dock())
+    Object.defineProperty(event, 'relatedTarget', { value: target })
+    fireEvent(dock(), event)
+  }
+
+  it('holds the highlight while the pointer crosses the dock', () => {
+    setup()
+    const dt = transfer()
+    fireEvent.dragStart(colGrip('status'), { dataTransfer: dt })
+    fireEvent.dragEnter(dock(), { dataTransfer: dt })
+    expect(dock()).toHaveClass('dt-over')
+
+    // dragleave fires again for every child the pointer crosses, so only a
+    // relatedTarget outside the section is a real exit. Asserted non-null
+    // first: `contains(null)` is false, so a renamed child would quietly turn
+    // this into the same check the next case already makes.
+    const inner = dock().querySelector('.dt-dock-rail')
+    expect(inner).not.toBeNull()
+    dragLeaveTowards(inner)
+    expect(dock()).toHaveClass('dt-over')
+
+    dragLeaveTowards(document.body)
+    expect(dock()).not.toHaveClass('dt-over')
+  })
+
+  it('unwinds the highlight from a drag that ends somewhere else entirely', () => {
+    setup()
+    const dt = transfer()
+    fireEvent.dragStart(colGrip('status'), { dataTransfer: dt })
+    fireEvent.dragEnter(dock(), { dataTransfer: dt })
+    expect(dock()).toHaveClass('dt-over')
+
+    // A drag dropped outside the dock sends it no dragleave at all, so the
+    // highlight comes off the flag going null rather than off a pointer event.
+    fireEvent.dragEnd(colGrip('status'))
+    expect(dock()).not.toHaveClass('dt-over')
+    expect(dock()).not.toHaveClass('dt-armed')
+    expect(chips()).toHaveLength(0)
+  })
+
+  it('reads the key off the dataTransfer when the drag did not start here', () => {
+    setup()
+    const dt = transfer()
+    dt.setData(COLUMN_DRAG_MIME, 'address')
+
+    fireEvent.drop(dock(), { dataTransfer: dt })
+    expect(chip('Address')).toBeInTheDocument()
+  })
+
+  it('refuses a payload that is not one of its columns', () => {
+    setup()
+    const dt = transfer()
+    // getData hands back a bare string, so it is checked before it is trusted
+    dt.setData(COLUMN_DRAG_MIME, 'phone')
+
+    fireEvent.drop(dock(), { dataTransfer: dt })
+    expect(chips()).toHaveLength(0)
+  })
+
+  it('a second drop of the same column changes nothing', () => {
+    setup()
+    const dt = transfer()
+    fireEvent.dragStart(colGrip('status'), { dataTransfer: dt })
+    fireEvent.drop(dock(), { dataTransfer: dt })
+    fireEvent.dragEnd(colGrip('status'))
+
+    const dt2 = transfer()
+    fireEvent.dragStart(colGrip('status'), { dataTransfer: dt2 })
+    fireEvent.drop(dock(), { dataTransfer: dt2 })
+    fireEvent.dragEnd(colGrip('status'))
+
+    // one chip per column: `between` covers what a second would, and a second
+    // enum chip on one column would AND to the empty set
+    expect(chips()).toHaveLength(1)
   })
 })
 
@@ -1007,6 +1641,158 @@ describe('cell range', () => {
   })
 })
 
+describe('sum readout', () => {
+  const cell = (row: number, col: number) =>
+    document.querySelector(`td[data-row="${row}"][data-col="${col}"]`) as HTMLElement
+  const panel = () => document.querySelector('.dt-sum')
+  const shown = () => panel()?.querySelector('.dt-sum-value')?.textContent
+  /** Solved cases is the fourth column. */
+  const CASES = 3
+
+  const sweep = (from: HTMLElement, to: HTMLElement) => {
+    fireEvent.mouseDown(from)
+    fireEvent.mouseOver(to)
+    fireEvent.mouseUp(document)
+  }
+
+  /** The demo set with the case counts replaced, for the awkward values. */
+  const withCases = (values: string[]): DataTableRecord[] =>
+    createDemoRecords()
+      .slice(0, values.length)
+      .map((record, i) => ({ ...record, solvedCases: values[i] }))
+
+  it('adds up a run of the Solved cases column', () => {
+    setup()
+    expect(panel()).toBeNull()
+
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(shown()).toBe('177') // 128 + 42 + 7
+  })
+
+  it('stays away when anything in the selection is not a number', () => {
+    setup()
+    sweep(cell(0, 0), cell(2, 1))
+    expect(panel()).toBeNull()
+
+    // one text column caught alongside the numbers is enough
+    sweep(cell(0, 2), cell(2, CASES))
+    expect(panel()).toBeNull()
+  })
+
+  it('does not call one cell a sum', () => {
+    setup()
+    fireEvent.mouseDown(cell(0, CASES))
+    fireEvent.mouseUp(document)
+    expect(panel()).toBeNull()
+
+    fireEvent.keyDown(cell(0, CASES), { key: 'ArrowDown', shiftKey: true })
+    expect(shown()).toBe('170') // 128 + 42
+  })
+
+  it('adds floats without dragging their noise onto the screen', () => {
+    setup({ records: withCases(['0.1', '0.2', '1.25']) })
+    sweep(cell(0, CASES), cell(1, CASES))
+    expect(shown()).toMatch(/^0[.,]3$/)
+
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(shown()).toMatch(/^1[.,]55$/)
+  })
+
+  it('skips blanks the way a spreadsheet does', () => {
+    setup({ records: withCases(['10', '', '20']) })
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(shown()).toBe('30')
+  })
+
+  it('needs two real numbers among the blanks', () => {
+    setup({ records: withCases(['10', '', '']) })
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(panel()).toBeNull()
+  })
+
+  it('goes away when the selection does', () => {
+    setup()
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(panel()).not.toBeNull()
+
+    fireEvent.keyDown(cell(0, CASES), { key: 'Escape' })
+    expect(panel()).toBeNull()
+  })
+
+  it('reaches the live region too, since the panel is aria-hidden', () => {
+    setup()
+    expect(panel).toBeTruthy()
+    fireEvent.mouseDown(cell(0, CASES))
+    fireEvent.mouseUp(document)
+    fireEvent.keyDown(cell(0, CASES), { key: 'ArrowDown', shiftKey: true })
+
+    expect(document.querySelector('.dt-sum')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByRole('status')).toHaveTextContent('Sum 170')
+  })
+
+  it('sits in the toolbar, immediately before the selection actions', () => {
+    setup()
+    sweep(cell(0, CASES), cell(2, CASES))
+
+    const block = panel() as HTMLElement
+    expect(block.closest('.dt-toolbar')).not.toBeNull()
+    expect(block.nextElementSibling).toHaveClass('dt-tool-actions')
+    // and it is after the spacer, so the buttons beside it never move
+    expect(block.previousElementSibling).toHaveClass('dt-spacer')
+  })
+
+  it('is held on screen long enough to fade out', async () => {
+    // jsdom runs no animations; what is under test is that the panel stays
+    // mounted for the length of the fade and then goes on its own.
+    render(<DataTable motion="always" />)
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(panel()).not.toHaveClass('dt-out')
+
+    fireEvent.keyDown(cell(0, CASES), { key: 'Escape' })
+    expect(shown()).toBe('177')
+    expect(panel()).toHaveClass('dt-out')
+
+    await waitFor(() => expect(panel()).toBeNull(), { timeout: 2000 })
+  })
+
+  it('a new total during that fade cancels it', () => {
+    render(<DataTable motion="always" />)
+    sweep(cell(0, CASES), cell(2, CASES))
+    fireEvent.keyDown(cell(0, CASES), { key: 'Escape' })
+    expect(panel()).toHaveClass('dt-out')
+
+    sweep(cell(1, CASES), cell(2, CASES))
+    expect(panel()).not.toHaveClass('dt-out')
+    expect(shown()).toBe('49') // 42 + 7
+  })
+
+  it('goes without the fade when motion is off', () => {
+    setup() // motion="never"
+    sweep(cell(0, CASES), cell(2, CASES))
+    fireEvent.keyDown(cell(0, CASES), { key: 'Escape' })
+    expect(panel()).toBeNull()
+  })
+
+  it('sorts the column as numbers, not as text', async () => {
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Sort by Solved cases' }))
+    expect(rowNames().slice(0, 4)).toEqual([
+      'Clara Whitfield', // 3
+      'Amelia Hart', // 7
+      'Ruth Abebe', // 12
+      'Sofia Lindqvist', // 18
+    ])
+  })
+
+  it('leaves the lexicographic sort alone everywhere else', async () => {
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Sort by Date' }))
+    // April still sorts above March, because "02" sorts above "04" — the
+    // prototype's wart, and untouched by the numeric comparator
+    expect(rowNames()[0]).toBe('Priya Anand') // 02 April, 2026
+  })
+})
+
 describe('controlled records', () => {
   it('renders exactly what the host passes and never mutates it', async () => {
     const records: DataTableRecord[] = createDemoRecords().slice(0, 3)
@@ -1067,10 +1853,10 @@ describe('regressions', () => {
     const { user } = setup()
     await user.click(screen.getAllByRole('button', { name: 'Edit record' })[0])
     await user.click(byTitle('Edit Status'))
-    expect(screen.getByRole('group', { name: 'Edit status' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Edit Status' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('heading', { name: 'Data table' }))
-    expect(screen.queryByRole('group', { name: 'Edit status' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Edit Status' })).not.toBeInTheDocument()
     // the row stays armed — only the editor closed
     expect(byTitle('Edit Status')).toBeInTheDocument()
   })
@@ -1081,7 +1867,7 @@ describe('regressions', () => {
     await user.click(byTitle('Edit Status'))
 
     await user.click(screen.getByRole('button', { name: 'Select Amelia Hart' }))
-    expect(screen.queryByRole('group', { name: 'Edit status' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Edit Status' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Select Amelia Hart' })).toHaveAttribute(
       'aria-pressed',
       'true',

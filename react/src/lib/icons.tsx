@@ -1,6 +1,6 @@
 /**
  * Icons traced from Lucide (https://lucide.dev) — pencil, trash-2, chevron-down,
- * check, x, plus — at stroke-linecap: square / stroke-linejoin: miter to match the
+ * check, x, plus, rotate-ccw — at stroke-linecap: square / stroke-linejoin: miter to match the
  * Modernist system's hard-edged geometry. Swap in the host codebase's Lucide
  * package if it has one; keep the stroke widths, they are part of the design.
  */
@@ -81,5 +81,17 @@ export const PlusIcon = () => (
   <Icon size={18} width={4}>
     <path d="M12 5v14" />
     <path d="M5 12h14" />
+  </Icon>
+)
+
+/**
+ * 15px / stroke 2 — rotate-ccw, on the dock's revert. A circular arrow rather
+ * than undo-2's straight one: this puts the whole dock back to unfiltered, it
+ * does not step back through the filters one at a time.
+ */
+export const RevertIcon = () => (
+  <Icon size={15} width={2}>
+    <path d="M3 2v6h6" />
+    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L3 8" />
   </Icon>
 )

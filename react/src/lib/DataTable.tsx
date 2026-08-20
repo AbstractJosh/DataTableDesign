@@ -28,16 +28,20 @@ import './DataTable.css'
 import {
   clampRect,
   describeRange,
+  formatSum,
   rangeHtml,
   rangeRect,
   rangeSize,
+  rangeSum,
   rangeText,
   writeClipboard,
   type CellRef,
   type RangeRect,
+  type RangeSum,
 } from './cellRange'
 import { DetailPane } from './DetailPane'
-import { FilterMenu } from './FilterMenu'
+import { COLUMN_DRAG_MIME, FilterDock } from './FilterDock'
+import { COLUMN_TYPES, ENUM_OPTIONS, matchesAll } from './filters'
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -57,13 +61,10 @@ import {
   COLUMN_WIDTHS,
   DEFAULT_COLUMNS,
   PILL_CLASS,
-  STATUSES,
-  STATUS_FILTERS,
   type ColumnKey,
   type DataTableProps,
   type DataTableRecord,
   type DraftRecord,
-  type RecordStatus,
 } from './types'
 
 const MONTHS = [
@@ -93,6 +94,9 @@ function nextId(records: DataTableRecord[]): string {
 /** Long enough to outlast the 200ms expand and the 180ms collapse. */
 const ANIMATION_FALLBACK_MS = 400
 
+/** Matches the `dt-sum-out` animation; the panel unmounts when it runs out. */
+const SUM_FADE_MS = 160
+
 /** The toolbar slider's bounds. A host opening outside them widens them. */
 const ROWS_PER_PAGE_MIN = 4
 const ROWS_PER_PAGE_MAX = 24
@@ -101,6 +105,21 @@ const cx = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(' ')
 
 const clamp = (n: number, low: number, high: number) => Math.max(low, Math.min(high, n))
+
+/**
+ * The prototype sorts every column with `localeCompare`, which is lexicographic
+ * even for dates — that stands, and swapping in real comparators is still the
+ * note for whoever wires this to an API. Two numbers are the exception: text
+ * order puts 100 before 20, which is plainly wrong on a column of case counts
+ * and would be read as a bug in the sum beside it.
+ */
+function compareCells(a: string, b: string): number {
+  const x = Number(a)
+  const y = Number(b)
+  // `Number('')` is 0, so a blank must not pass for a number here
+  if (a.trim() && b.trim() && Number.isFinite(x) && Number.isFinite(y)) return x - y
+  return a.localeCompare(b)
+}
 
 /**
  * With the drag moved onto the grip, the browser's default drag image would be
@@ -174,26 +193,39 @@ function CellEditor({
 }
 
 /**
- * Status is an enum that drives the pill colours, so it gets a three-way picker
- * instead of a text box.
+ * A column whose values are a fixed few gets a stack of buttons instead of a
+ * text box. Status was the only such column in the prototype; `favouriteSeason`
+ * is the second, so the picker asks `ENUM_OPTIONS` what to offer rather than
+ * naming a column — a third enum column is a new entry in filters.ts and
+ * nothing here.
+ *
+ * The class stays `dt-status-pick`: it is the stylesheet's name for this
+ * control, and two pointer handlers below single the control out by that class.
+ * Renaming it would touch three files to say the same thing.
  */
-function StatusPicker({
+function EnumPicker({
+  columnKey,
   current,
   onPick,
 }: {
-  current: RecordStatus
-  onPick: (status: RecordStatus) => void
+  columnKey: ColumnKey
+  current: string
+  onPick: (value: string) => void
 }) {
   return (
-    <div className="dt-status-pick" role="group" aria-label="Edit status">
-      {STATUSES.map((status) => (
+    <div
+      className="dt-status-pick"
+      role="group"
+      aria-label={`Edit ${COLUMN_LABELS[columnKey]}`}
+    >
+      {(ENUM_OPTIONS[columnKey] ?? []).map((option) => (
         <button
-          key={status}
+          key={option}
           type="button"
-          className={cx(status === current && 'dt-on')}
-          onClick={() => onPick(status)}
+          className={cx(option === current && 'dt-on')}
+          onClick={() => onPick(option)}
         >
-          {status}
+          {option}
         </button>
       ))}
     </div>
@@ -211,7 +243,8 @@ interface RowCallbacks {
   onPickCell: (id: string, key: ColumnKey) => void
   onCommitCell: (id: string, key: ColumnKey, value: string) => void
   onCancelEdit: () => void
-  onSetStatus: (id: string, status: RecordStatus) => void
+  /** An enum cell (status, favourite season) committed one of its options. */
+  onSetEnum: (id: string, key: ColumnKey, value: string) => void
   onRequestDelete: (id: string) => void
   onCancelDelete: () => void
   onConfirmDelete: (id: string) => void
@@ -271,10 +304,13 @@ function RecordRow(props: RecordRowProps) {
 
   const cellContent = (key: ColumnKey) => {
     if (editingKey === key) {
-      return key === 'status' ? (
-        <StatusPicker
-          current={record.status}
-          onPick={(status) => props.onSetStatus(record.id, status)}
+      // The column's own type decides the editor, so `favouriteSeason` gets the
+      // same picker `status` does without either of them being named here.
+      return COLUMN_TYPES[key] === 'enum' ? (
+        <EnumPicker
+          columnKey={key}
+          current={String(record[key])}
+          onPick={(value) => props.onSetEnum(record.id, key, value)}
         />
       ) : (
         <CellEditor
@@ -286,6 +322,10 @@ function RecordRow(props: RecordRowProps) {
       )
     }
 
+    // Only `status` gets a pill, not every enum column: the pill's three colours
+    // carry the success / in-progress / failed reading, and a season painted the
+    // same way would claim a meaning it does not have. `favouriteSeason` falls
+    // through to the plain cell text below.
     if (key === 'status') {
       return wrap(
         key,
@@ -310,7 +350,9 @@ function RecordRow(props: RecordRowProps) {
       )
     }
 
-    const muted = key === 'email' || key === 'address'
+    // Address alone now: `email` was the other muted column and it has moved to
+    // the detail pane. A season is a first-class value, not a secondary one.
+    const muted = key === 'address'
     return wrap(key, <span className={cx('dt-cell-text', muted && 'dt-muted')}>{record[key]}</span>)
   }
 
@@ -456,23 +498,24 @@ function RecordRow(props: RecordRowProps) {
 function DraftRow({
   draft,
   cols,
-  editingStatus,
+  editingEnumKey,
   invalid,
   focusToken,
   onPatch,
-  onPickStatus,
-  onSetStatus,
+  onPickEnum,
+  onSetEnum,
   onSave,
   onCancel,
 }: {
   draft: DraftRecord
   cols: ColumnKey[]
-  editingStatus: boolean
+  /** The enum cell whose picker is open, or null. Only one is ever open. */
+  editingEnumKey: ColumnKey | null
   invalid: boolean
   focusToken: number
   onPatch: (patch: Partial<DraftRecord>) => void
-  onPickStatus: () => void
-  onSetStatus: (status: RecordStatus) => void
+  onPickEnum: (key: ColumnKey) => void
+  onSetEnum: (key: ColumnKey, value: string) => void
   onSave: () => void
   onCancel: () => void
 }) {
@@ -498,14 +541,32 @@ function DraftRow({
         <td className="dt-cell-grip" />
         <td className="dt-cell-check" />
         {cols.map((key) => {
-          if (key === 'status') {
+          // Enum columns are picked, not typed, so they take no text input and
+          // stay out of the first-input hunt below.
+          if (COLUMN_TYPES[key] === 'enum') {
             return (
               <td key={key} data-key={key}>
-                {editingStatus ? (
-                  <StatusPicker current={draft.status} onPick={onSetStatus} />
+                {editingEnumKey === key ? (
+                  <EnumPicker
+                    columnKey={key}
+                    current={draft[key]}
+                    onPick={(value) => onSetEnum(key, value)}
+                  />
                 ) : (
-                  <button type="button" className="dt-pick" title="Set status" onClick={onPickStatus}>
-                    <span className={cx('dt-pill', PILL_CLASS[draft.status])}>{draft.status}</span>
+                  <button
+                    type="button"
+                    className="dt-pick"
+                    title={`Set ${COLUMN_LABELS[key]}`}
+                    onClick={() => onPickEnum(key)}
+                  >
+                    {/* The pill is status's alone, as in a record row. */}
+                    {key === 'status' ? (
+                      <span className={cx('dt-pill', PILL_CLASS[draft.status])}>
+                        {draft.status}
+                      </span>
+                    ) : (
+                      <span className="dt-cell-text">{draft[key]}</span>
+                    )}
                   </button>
                 )}
               </td>
@@ -624,12 +685,22 @@ export function DataTable(props: DataTableProps) {
 
   const [draftFocusToken, setDraftFocusToken] = useState(0)
   const [draftInvalid, setDraftInvalid] = useState(false)
-  const [drag, setDrag] = useState<{ kind: 'row' | 'col'; id: string } | null>(null)
+  // Discriminated on `kind` so a column drag carries a `ColumnKey` rather than a
+  // bare string: the filter dock is handed this id and has to trust it.
+  const [drag, setDrag] = useState<
+    { kind: 'row'; id: string } | { kind: 'col'; id: ColumnKey } | null
+  >(null)
   const [announcement, setAnnouncement] = useState('')
 
   // Held off state as well, so a drag never depends on a commit having landed.
   const dragRowRef = useRef<string | null>(null)
-  const dragColRef = useRef<string | null>(null)
+  const dragColRef = useRef<ColumnKey | null>(null)
+  /**
+   * The column order as it stood when a column drag began. A drag that travels
+   * up to the filter dock passes over its neighbours on the way and reorders the
+   * header as it goes; the dock is additive, so the drop puts this back.
+   */
+  const preDragCols = useRef<ColumnKey[] | null>(null)
 
   // Same reasoning for the cell-range drag: the pointer moves faster than the
   // commits, and the gesture must not depend on one having landed. `live` is
@@ -640,25 +711,31 @@ export function DataTable(props: DataTableProps) {
   /** Set by whichever handler should pull DOM focus onto the moving corner. */
   const focusCell = useRef(false)
 
-  /* ---- derive: filter (status, then query) -> sort -> paginate -> slice ---- */
+  /* ---- derive: filter (conditions, then query) -> sort -> paginate -> slice ---- */
   const filtered = useMemo(() => {
     const q = state.query.trim().toLowerCase()
 
     const list = records.filter((r) => {
-      if (state.filter !== 'All' && r.status !== state.filter) return false
+      // PORT ADDITION: the dock's chips, ANDed, in place of the prototype's one
+      // status dropdown. Chips with no operand yet are skipped rather than
+      // matching nothing — see isActive in filters.ts.
+      if (!matchesAll(r, state.conditions)) return false
       if (!q) return true
-      return `${r.name} ${r.email} ${r.address} ${r.mobile}`.toLowerCase().includes(q)
+      // PORT: the prototype's fourth searched field was the phone number, which
+      // this column set no longer carries. A case count is not something anyone
+      // searches for, so the query stays on the three text fields — `email`
+      // among them, which is still on the record now that it shows in the
+      // detail pane rather than in a column.
+      return `${r.name} ${r.email} ${r.address}`.toLowerCase().includes(q)
     })
 
     if (!state.sort) return list
 
     const { key, dir } = state.sort
-    // Lexicographic on purpose — swap in real date/number comparators when this
-    // is wired to a real API.
     return list
       .slice()
-      .sort((a, b) => String(a[key]).localeCompare(String(b[key])) * (dir === 'asc' ? 1 : -1))
-  }, [records, state.filter, state.query, state.sort])
+      .sort((a, b) => compareCells(String(a[key]), String(b[key])) * (dir === 'asc' ? 1 : -1))
+  }, [records, state.conditions, state.query, state.sort])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / rowsPerPage))
   const page = Math.min(state.page, pageCount - 1)
@@ -694,6 +771,41 @@ export function DataTable(props: DataTableProps) {
           col: Math.min(state.range.focus.col, state.cols.length - 1),
         }
       : null
+
+  // Present only while every selected cell holds a number; see rangeSum.
+  const sum = useMemo(
+    () => (rangeBox ? rangeSum(visible, state.cols, rangeBox) : null),
+    [rangeBox, visible, state.cols],
+  )
+
+  /**
+   * A total that has gone away still has to be on screen to fade out, so the
+   * panel keeps rendering the last one for the length of the fade. A live total
+   * always wins over it, and with motion off it is skipped entirely — the same
+   * rule the FLIP follows.
+   */
+  const [fadingSum, setFadingSum] = useState<RangeSum | null>(null)
+  const lastSum = useRef<RangeSum | null>(null)
+  const fadeTimer = useRef<number | undefined>(undefined)
+
+  useEffect(() => {
+    const previous = lastSum.current
+    lastSum.current = sum
+
+    if (sum) {
+      window.clearTimeout(fadeTimer.current)
+      setFadingSum(null)
+      return
+    }
+    if (!previous || !motion) return
+
+    setFadingSum(previous)
+    fadeTimer.current = window.setTimeout(() => setFadingSum(null), SUM_FADE_MS)
+  }, [sum, motion])
+
+  useEffect(() => () => window.clearTimeout(fadeTimer.current), [])
+
+  const shownSum = sum ?? fadingSum
 
   // One tab stop for the whole grid: the moving corner owns it, or the first
   // cell when nothing is selected yet.
@@ -751,8 +863,42 @@ export function DataTable(props: DataTableProps) {
   const endDrag = useCallback(() => {
     dragRowRef.current = null
     dragColRef.current = null
+    // The capture belongs to the drag that took it, and `dragend` fires after
+    // `drop`, so onDropColumn has already spent it by the time this runs. Left
+    // set, a drag that ended anywhere else would still be sitting here when a
+    // *foreign* column — one from another instance of this table, resolved off
+    // the dataTransfer rather than from our own dragstart — lands on the dock,
+    // and the drop would "restore" an order the user set minutes ago.
+    preDragCols.current = null
     setDrag(null)
   }, [])
+
+  /**
+   * A column dropped on the filter dock.
+   *
+   * The drop is additive: the column stays in the table. But the drag had to
+   * cross the header to get out of it, and every `dragenter` on a neighbouring
+   * `<th>` moved the column one place along — so the order the pointer left
+   * behind is not the order the user asked for. Put the pre-drag order back
+   * first (sort intact, which is why this is `setColumnOrder` and not
+   * `resetOrder`), then add the chip.
+   */
+  const onDropColumn = useCallback(
+    (key: ColumnKey) => {
+      const before = preDragCols.current
+      preDragCols.current = null
+      // The same FLIP every other column move gets, and for the same reason: the
+      // columns slide back rather than snapping, so the undo is legible as an
+      // undo. Guarded on the order really having changed, which is the rule
+      // `snapshot` asks its callers to keep (useFlipReorder.ts).
+      if (before && before.join() !== state.cols.join()) {
+        flip('X')
+        dispatch({ type: 'setColumnOrder', cols: before })
+      }
+      dispatch({ type: 'addCondition', key })
+    },
+    [flip, state.cols],
+  )
 
   /**
    * The row and column grips (`⠿`) are the only drag sources — the prototype
@@ -784,9 +930,20 @@ export function DataTable(props: DataTableProps) {
     if (grip.dataset.dtGrip === 'col') {
       const th = grip.closest('th[data-key]') as HTMLElement | null
       if (!th) return
-      dragColRef.current = th.dataset.key as string
-      setDrag({ kind: 'col', id: th.dataset.key as string })
-      event.dataTransfer.effectAllowed = 'move'
+      const key = th.dataset.key as ColumnKey
+      dragColRef.current = key
+      setDrag({ kind: 'col', id: key })
+      // PORT ADDITION: the payload the filter dock reads. It is a private MIME
+      // type, so a column drag can never be confused with the text the browser
+      // lets you drag out of a cell, and `dataTransfer.types` carries it through
+      // `dragover`, where `getData` is not allowed to answer.
+      event.dataTransfer.setData(COLUMN_DRAG_MIME, key)
+      // "copyMove", not "move": the header reorder is the move, and the drop on
+      // the dock is a copy — the column stays in the table. A dropEffect the
+      // effectAllowed does not cover is reset to "none" and the drop is refused.
+      event.dataTransfer.effectAllowed = 'copyMove'
+      // The order to restore if this drag ends in the dock; see onDropColumn.
+      preDragCols.current = state.cols
       dragImage(event, th)
       return
     }
@@ -806,7 +963,7 @@ export function DataTable(props: DataTableProps) {
 
     if (dragColRef.current) {
       const th = target.closest('th[data-key]') as HTMLElement | null
-      if (th) moveColumn(dragColRef.current as ColumnKey, th.dataset.key as ColumnKey)
+      if (th) moveColumn(dragColRef.current, th.dataset.key as ColumnKey)
       return
     }
     if (dragRowRef.current) {
@@ -869,7 +1026,12 @@ export function DataTable(props: DataTableProps) {
   }
 
   const announceRange = (rect: RangeRect | null) => {
-    if (rect) announce(describeRange(rect, state.cols, visible.length))
+    if (!rect) return
+    // The panel itself is aria-hidden, so this is the only way the total
+    // reaches anyone driving the grid from the keyboard.
+    const total = rangeSum(visible, state.cols, rect)
+    const said = describeRange(rect, state.cols, visible.length)
+    announce(total ? `${said} Sum ${formatSum(total)}.` : said)
   }
 
   const onCellMouseDown = (event: MouseEvent<HTMLTableElement>) => {
@@ -1055,9 +1217,12 @@ export function DataTable(props: DataTableProps) {
     dispatch({ type: 'closeEditor' })
   }
 
-  const setStatus = (id: string, status: RecordStatus) => {
-    commitRecords(records.map((r) => (r.id === id ? { ...r, status } : r)))
-    dispatch({ type: 'statusSet' }) // back to picking, so another field can follow
+  // One writer for every enum column. The value is one of `ENUM_OPTIONS[key]`
+  // by construction — the picker offers nothing else — which is the narrowing
+  // the computed key hides from TypeScript, exactly as in `commitCell` above.
+  const setEnum = (id: string, key: ColumnKey, value: string) => {
+    commitRecords(records.map((r) => (r.id === id ? { ...r, [key]: value } : r)))
+    dispatch({ type: 'enumSet' }) // back to picking, so another field can follow
   }
 
   const confirmDelete = (id: string) => {
@@ -1112,8 +1277,10 @@ export function DataTable(props: DataTableProps) {
         name: '',
         date: todayLabel(),
         status: 'In progress',
-        mobile: '',
-        email: '',
+        solvedCases: '0',
+        // Both enum cells open on a value rather than blank: the draft row's
+        // picker edits a value in place, it has no empty state to show.
+        favouriteSeason: 'Spring',
         address: '',
       }
       dispatch({ type: 'startDraft', draft })
@@ -1140,9 +1307,13 @@ export function DataTable(props: DataTableProps) {
         name,
         date: draft.date.trim(),
         status: draft.status,
-        mobile: draft.mobile.trim(),
-        email: draft.email.trim(),
+        solvedCases: draft.solvedCases.trim() || '0',
+        favouriteSeason: draft.favouriteSeason,
         address: draft.address.trim(),
+        // The draft collects only the visible columns, and `email` is not one
+        // any more — it is a detail-pane field now, filled in after the fact
+        // like `owner` and `note` below it.
+        email: '',
         owner: 'Unassigned',
         activity: 'Just now',
         plan: 'Standard',
@@ -1163,7 +1334,7 @@ export function DataTable(props: DataTableProps) {
    * action it dispatches closes the editor anyway (see KEEPS_EDITING in
    * state.ts), and closing it here first would resize the row under the cursor
    * between mousedown and mouseup, so the click would miss its target. The
-   * status picker has no blur of its own, so without this it would stay open
+   * enum picker has no blur of its own, so without this it would stay open
    * until Escape.
    */
   useEffect(() => {
@@ -1281,12 +1452,11 @@ export function DataTable(props: DataTableProps) {
           onChange={(event) => dispatch({ type: 'setQuery', query: event.target.value })}
         />
 
-        <FilterMenu
-          label="Status"
-          value={state.filter}
-          options={STATUS_FILTERS}
-          onPick={(filter) => dispatch({ type: 'setFilter', filter })}
-        />
+        {/* PORT: the status dropdown stood here. It is the filter dock below the
+            toolbar now — one column among any of them, rather than the only
+            column anything could be filtered by. Nothing takes its place: the
+            search keeps its 380px cap and `.dt-spacer` absorbs the width, so the
+            controls on the right do not move. */}
 
         <label className="dt-rows">
           <span className="dt-rows-tag">Rows</span>
@@ -1305,6 +1475,16 @@ export function DataTable(props: DataTableProps) {
         </label>
 
         <div className="dt-spacer" />
+
+        {/* The total for the cell selection, when it has one. It sits after the
+            spacer, so it appears and disappears in the gap without moving the
+            buttons to its right. */}
+        {shownSum ? (
+          <div className={cx('dt-sum', !sum && 'dt-out')} aria-hidden="true">
+            <span className="dt-sum-tag">Sum</span>
+            <span className="dt-sum-value">{formatSum(shownSum)}</span>
+          </div>
+        ) : null}
 
         {/* Selection actions — greyed out with nothing selected. They keep their
             place in the toolbar either way, so the table never shifts. */}
@@ -1344,6 +1524,22 @@ export function DataTable(props: DataTableProps) {
           <PlusIcon />
         </button>
       </div>
+
+      {/* PORT ADDITION: the filter dock. It sits between the toolbar and the
+          table because that is the shortest trip a column can make out of the
+          header — straight up, into the strip directly above it. */}
+      <FilterDock
+        conditions={state.conditions}
+        columns={state.cols}
+        draggingColumn={drag?.kind === 'col' ? drag.id : null}
+        onAdd={(key) => dispatch({ type: 'addCondition', key })}
+        onDropColumn={onDropColumn}
+        onSetOp={(id, op) => dispatch({ type: 'setConditionOp', id, op })}
+        onSetValue={(id, patch) => dispatch({ type: 'setConditionValue', id, ...patch })}
+        onToggleValue={(id, option) => dispatch({ type: 'toggleConditionValue', id, option })}
+        onRemove={(id) => dispatch({ type: 'removeCondition', id })}
+        onClearAll={() => dispatch({ type: 'clearConditions' })}
+      />
 
       {children}
 
@@ -1403,14 +1599,20 @@ export function DataTable(props: DataTableProps) {
                     <div className="dt-th-inner">
                       {/* As with the rows: the grip is the drag source, so a
                           press on the label still belongs to the sort button. */}
+                      {/* PORT ADDITION: this grip does two jobs now — it
+                          reorders the column, and it is the only pointer route
+                          into the filter dock. The dock says so itself, but only
+                          while it is empty, so the grip has to carry it too. The
+                          label names "Add filter" because the drag has no
+                          keyboard equivalent; that block is the one that does. */}
                       <span
                         className="dt-grip"
                         role="button"
                         tabIndex={0}
                         draggable
                         data-dt-grip="col"
-                        title="Drag to reorder column"
-                        aria-label={`Reorder ${COLUMN_LABELS[key]} column. Hold Alt and press Arrow Left or Arrow Right to move it.`}
+                        title="Drag to reorder the column, or into the filter dock to filter by it"
+                        aria-label={`Reorder ${COLUMN_LABELS[key]} column. Hold Alt and press Arrow Left or Arrow Right to move it. To filter by it, drag it into the filter dock or use the dock's Add filter button.`}
                         onKeyDown={(event) => onColGripKeyDown(event, key)}
                       >
                         ⠿
@@ -1441,15 +1643,15 @@ export function DataTable(props: DataTableProps) {
             <DraftRow
               draft={state.draft}
               cols={state.cols}
-              editingStatus={state.editing?.id === DRAFT_ID && state.editing.key === 'status'}
+              editingEnumKey={state.editing?.id === DRAFT_ID ? state.editing.key : null}
               invalid={draftInvalid}
               focusToken={draftFocusToken}
               onPatch={(patch) => {
                 setDraftInvalid(false)
                 dispatch({ type: 'patchDraft', patch })
               }}
-              onPickStatus={() => dispatch({ type: 'pickCell', id: DRAFT_ID, key: 'status' })}
-              onSetStatus={(status) => dispatch({ type: 'setDraftStatus', status })}
+              onPickEnum={(key) => dispatch({ type: 'pickCell', id: DRAFT_ID, key })}
+              onSetEnum={(key, value) => dispatch({ type: 'setDraftEnum', key, value })}
               onSave={saveDraft}
               onCancel={() => dispatch({ type: 'clearDraft' })}
             />
@@ -1484,7 +1686,7 @@ export function DataTable(props: DataTableProps) {
               onPickCell={(id, key) => dispatch({ type: 'pickCell', id, key })}
               onCommitCell={commitCell}
               onCancelEdit={() => dispatch({ type: 'closeEditor' })}
-              onSetStatus={setStatus}
+              onSetEnum={setEnum}
               onRequestDelete={(id) => dispatch({ type: 'requestDelete', id })}
               onCancelDelete={() => dispatch({ type: 'cancelDelete' })}
               onConfirmDelete={confirmDelete}
@@ -1501,7 +1703,7 @@ export function DataTable(props: DataTableProps) {
         <div className="dt-empty">
           <div className="dt-empty-title">No records match</div>
           <div className="dt-empty-body">
-            Clear the search field or pick a different status filter.
+            Clear the search field, or loosen a filter in the dock above.
           </div>
         </div>
       ) : null}

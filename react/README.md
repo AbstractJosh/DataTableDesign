@@ -3,10 +3,10 @@
 The **Records / Directory** data-table screen, ported to a portable React
 component. One import, zero runtime dependencies, one stylesheet.
 
-Search, a status filter, an adjustable page size, column sort, row selection,
-expandable detail rows, inline editing, a draft "new record" row, in-place
-delete confirmation, drag-to-reorder rows *and* columns (from their grips),
-Excel-style cell-range selection with copy, and pagination — with the
+Search, a drag-to-build filter dock, an adjustable page size, column sort, row
+selection, expandable detail rows, inline editing, a draft "new record" row,
+in-place delete confirmation, drag-to-reorder rows *and* columns (from their
+grips), Excel-style cell-range selection with copy, and pagination — with the
 prototype's animations kept: the measured-height detail expand, the FLIP
 reorder slide, and the caret/chevron rotations.
 
@@ -69,7 +69,7 @@ own the list.
 | `defaultRecords` | `DataTableRecord[]` | the demo set | Initial list when uncontrolled. |
 | `onRecordsChange` | `(next) => void` | — | Add, edit, delete, reorder. |
 | `columns` | `ColumnKey[]` | all six | Initial column order; also what **Reset order** restores. |
-| `accentColor` | `string` | `#1d2d46` | Header bar, primary button, active filter and page, selection rules, pencil, chevron. |
+| `accentColor` | `string` | `#1d2d46` | Header bar, primary button, open filter chip, active page, selection rules, pencil, chevron. |
 | `density` | `'comfortable' \| 'compact'` | `comfortable` | 15px or 9px vertical cell padding. |
 | `rowsPerPage` | `number` | `8` | The page size the table **opens on**; the toolbar's slider owns it after that. |
 | `onRowsPerPageChange` | `(rows) => void` | — | Fired when that slider moves. |
@@ -84,12 +84,86 @@ own the list.
 | `onSelectionChange` | `(ids) => void` | — | |
 | `onEditRecord` | `(record) => void` | — | Fired when the pencil arms a row, for hosts that would rather open their own editor. |
 | `className` / `style` | | | Merged onto the root; `style` can override the accent and padding custom properties. |
-| `children` | `ReactNode` | — | Slot between the toolbar and the table. |
+| `children` | `ReactNode` | — | Slot between the filter dock and the table. |
 
 A `DataTableRecord` is
-`{ id, name, date, status, mobile, email, address, owner, activity, plan, note }`,
-where `status` is `'Success' | 'In progress' | 'Failed'`. The last four fields
-fill the detail panes.
+`{ id, name, date, status, solvedCases, favouriteSeason, address, email, owner, activity, plan, note }`,
+where `status` is `'Success' | 'In progress' | 'Failed'` and `favouriteSeason`
+is `'Spring' | 'Summer' | 'Autumn' | 'Winter'`. The first seven are the six
+columns plus the id; the last five fill the detail panes. `email` is one of
+them — it is not a column, but the search still reads it.
+
+## Filtering
+
+Above the table is the **filter dock**: a strip that starts empty, saying what
+to do with it. Drag a column out of the table header by its `⠿` grip and drop it
+in, and that column becomes a **chip** — its label, the condition it holds, and a
+popup to set that condition in. Or press the chain's head block — **Add
+filter** — and pick the column from a list; the drag is a gesture, not a
+requirement.
+
+The column stays in the table. The dock is additive — a filter shelf, not a
+pivot shelf — so the drag's trip across the header is undone on drop and the
+column lands back where it started, sort intact.
+
+A few rules are worth knowing before you wire real data to it:
+
+- **A chip with no operand yet filters nothing.** A freshly dropped chip reads
+  *Any* and is drawn hollow — the darker ground on its face, its value greyed —
+  so it reads as unfilled rather than as a filter quietly passing everything.
+  This is why the table does not go empty the moment you drop a column in, and it is why the drop opens the
+  popup with focus already on the operand — the value box, or the first entry of
+  an enum column's tick list.
+- **Chips combine with AND.** Each one narrows what the ones before it left.
+- **One chip per column.** A column that already has one is listed in the
+  add-picker but not selectable; ranges are what the `is between` operator is
+  for.
+- **The operators follow the column's type, not its name.** `text` gets
+  contains / does not contain / is / starts with; `number` gets is / at least /
+  at most / over / under / between; `date` gets on / before / after / between;
+  `enum` gets is any of / is none of, over that column's own values. Teaching a
+  new column to filter is one entry in `COLUMN_TYPES` — there is no per-column
+  branch in the UI.
+- **The search box is separate** and runs after the chips. It reads name, email
+  and address; the chips read one column each.
+
+Three ways out, and they are not the same: the cross on a chip removes it,
+**Clear** inside the popup empties that chip's operands and leaves it docked
+(back to *Any*, filtering nothing), and the **revert** — the circular arrow left
+of the head block, greyed out until there is something to revert — empties the
+dock. **Done** only closes the popup, putting focus back on the
+chip's own button. After a removal — either kind — focus lands somewhere
+deliberate instead of falling to the top of the host page: the chip that took
+the gap, or the head block when nothing is left.
+
+Date operands are parsed properly — both the record's `19 August, 2026` and the
+`2026-08-19` an `<input type="date">` hands over, as UTC midnight. Sorting is
+still `localeCompare`, so a *sorted* date column is still lexicographic. That
+asymmetry is deliberate and inherited from the prototype; swap in real
+comparators when you wire real data.
+
+The dock owns its conditions — there is no prop that seeds them or reports them
+back. What is exported is the engine underneath, so a host can build the same
+conditions itself and apply the same rules to its own copy of the records
+(server-side, or across a result set an export has to cover):
+
+```ts
+import {
+  COLUMN_TYPES, OPS_FOR_TYPE, OP_LABELS, ENUM_OPTIONS, matchesAll,
+  type ColumnType, type FilterOp, type FilterCondition,
+} from '@alp/data-table'
+
+const active = records.filter((r) => matchesAll(r, conditions))
+```
+
+A hand-built `FilterCondition` needs all six fields — `values` for an enum
+column, `value` (and `value2` for `is between`) for the rest, and an `id`, which
+`matchesAll` never reads: it is a React key inside the dock, so any unique
+string will do.
+
+> **Upgrading:** `STATUS_FILTERS` and the `StatusFilter` type are **gone** with
+> the toolbar dropdown they described. What arrives in their place is the list
+> above, plus `SEASONS` and the `Season` type for the new column.
 
 ## Selecting cells
 
@@ -127,6 +201,27 @@ The grid is a single tab stop: the moving corner carries `tabindex="0"` and
 every other cell `-1`, so Tab still steps *past* the table rather than through
 150 cells. Buttons inside cells keep their own clicks and keys — pressing the
 row chevron only becomes a selection if the pointer leaves that cell first.
+
+### The sum
+
+Select a run of cells that are all numbers and a panel appears in the toolbar,
+just left of **Export**, with their total. It is meant for the **Solved cases**
+column, but it is not tied to it: any selection whose cells all parse as
+numbers gets one.
+
+It sits after the toolbar's flex spacer, so it appears and disappears in the
+gap — the buttons beside it never move. It slides in from their side and fades
+back out the same way; the exit is held open by a timer, because an unmounted
+element cannot animate, and it is skipped entirely when motion is off.
+
+The rules are a spreadsheet's. Blank cells are skipped rather than counted as
+zero; a single cell that is not a number takes the panel away entirely, because
+"what do these add up to" has no answer for a column of names; and one lone
+value is not shown as a sum. The total carries no more decimals than went into
+it, so `0.1 + 0.2` reads `0.3`, and it is grouped in the reader's locale.
+
+The panel is `aria-hidden`, with the total appended to the live region that
+announces the selection instead.
 
 Not supported: Ctrl+click for a second rectangle, pasting, clearing cells, and
 auto-scrolling the horizontal overflow while sweeping past its edge.
@@ -193,7 +288,9 @@ The animations themselves:
 | detail pane open | `200ms` `dt-expand`, to the pane's **measured** height |
 | detail pane close | `180ms` `dt-collapse`, from the height measured at the click |
 | row / column reorder | FLIP, `200ms cubic-bezier(.2,.7,.3,1)` |
-| status filter menu | `140ms` `dt-menu-in`, plus a `180ms ease` caret |
+| filter chip popup, operator menu, add-filter list | `140ms` `dt-menu-in`, plus a `180ms ease` caret |
+| filter block face, idle → armed → over → open | `140ms ease` background |
+| sum panel | `140ms` `dt-sum-in`, `160ms` `dt-sum-out` |
 | sort caret, row chevron | `180ms ease` rotation and colour |
 
 ## Keyboard and accessibility
@@ -207,15 +304,20 @@ prototype could only do by drag:
 | `Alt` + `←` / `→` on a column grip | move that column |
 | arrows / `Shift`+arrows in a cell | move / stretch the cell range (see **Selecting cells**) |
 | `Ctrl`/`Cmd` + `A` / `C` in a cell | select the page / copy the range |
+| any all-numeric selection | totals in a panel at the bottom right (see **The sum**) |
 | `Enter` in a cell editor | commit the field |
 | `Enter` in the draft row | save the record |
 | `Escape` (focus inside the table) | back out one level: delete confirmation → open editor → draft row → armed row → cell range |
-| `↓` / `Enter` / `Space` on the status filter | open the menu; arrows and `Home` / `End` move, `Enter` picks, `Escape` closes |
+| `↓` / `Enter` / `Space` on **Add filter** | open the column list; arrows and `Home` / `End` move, `Enter` adds a chip, `Escape` closes |
+| inside a filter chip | the operator menu answers the same keys; the value list is multi-select, so `Enter` / `Space` ticks rather than commits; `Escape` closes the chip and goes back to its button |
 | `←` / `→` on the rows-per-page slider | one row at a time (`Home` / `End` for the ends) |
 
 Moves are announced through a polite live region. Sorted columns carry
-`aria-sort`, the selection boxes and filter options `aria-pressed`, the row
-chevrons `aria-expanded`, and the current page `aria-current`. Focus rings are
+`aria-sort`, the selection boxes `aria-pressed`, the dock's operator and value
+lists `aria-selected` (they are `role="listbox"` popups, not toggle buttons —
+the add-picker marks the columns already docked `aria-disabled` instead), the
+chip buttons `aria-haspopup="dialog"` + `aria-expanded`, the row chevrons
+`aria-expanded`, and the current page `aria-current`. Focus rings are
 `:focus-visible` only, 2px in the accent.
 
 Drag-and-drop uses the native HTML5 API, as the prototype does, but only the
@@ -229,7 +331,7 @@ swap the handlers and keep the FLIP hook.
 ```
 npm install
 npm run dev        # the demo at localhost:5173, with a prop harness
-npm test           # 99 behaviour tests (vitest + jsdom)
+npm test           # 163 behaviour tests (vitest + jsdom)
 npm run typecheck
 npm run build      # dist/index.js + dist/data-table.css + dist/fonts
 ```
@@ -252,11 +354,15 @@ host app makes it unsafe:
   keeps the row (or header cell) as the thing you see under the cursor.
 - **Cell-range selection is new**, and is what needed the row body free. See
   **Selecting cells**.
-- **The status filter is a dropdown**, where the prototype uses a four-position
-  segmented switch with a sliding selector. Same options, same order, same
-  effect — a quarter of the width, which is what makes room for the next one.
-  It is a button plus a `role="listbox"` popup rather than a native `<select>`,
-  whose OS-drawn popup cannot carry the system's flat, square styling.
+- **The status filter became a filter dock.** The prototype spends a
+  four-position segmented switch on one column's status; the port gives every
+  column a filter and puts them in a strip of their own. See **Filtering**. The
+  dropdown the switch first became survives inside it, as the operator picker:
+  a button plus a `role="listbox"` popup rather than a native `<select>`, whose
+  OS-drawn popup cannot carry the system's flat, square styling.
+- **`favouriteSeason` replaces `email` as the fifth column.** Two enum columns
+  are what make a two-chip AND worth demonstrating. `email` keeps its place on
+  the record, moves into the detail pane, and is still searched.
 - **Rows per page is a toolbar control**, not a fixed prop. Resizing follows the
   record at the top of the page rather than snapping back to page 1.
 - **Editors are React inputs.** The prototype kept them uncontrolled and needed a
@@ -269,5 +375,11 @@ host app makes it unsafe:
 - **The logo is an inlined data URI** so the component needs no asset pipeline.
   Pass `logoSrc` to route it through yours instead; `src/lib/logo.png` is the
   same file.
+- **The fourth column is `solvedCases`, not `mobile`.** Same position, 150px,
+  and still a string field like every other one. The search dropped to name,
+  email and address with it — nobody searches for a case count.
 - Sorting is still `String(a[key]).localeCompare(...)`, so it is lexicographic
-  even for dates. Swap in real comparators when you wire real data.
+  even for dates — **except** when both values parse as numbers, which now
+  compare as numbers. A column of counts that sorts 100 above 20 reads as a
+  bug, and it sits right beside a total. Swap in real comparators for the rest
+  when you wire real data.

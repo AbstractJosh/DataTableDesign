@@ -74,6 +74,14 @@
   outline: 2px solid var(--dt-accent);
   outline-offset: 2px;
 }
+@keyframes dt-sum-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes dt-sum-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(8px); }
+}
 @keyframes dt-menu-in {
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: none; }
@@ -127,9 +135,12 @@
 }
 /* PORT: the prototype spends a four-position segmented switch on the status
    filter. This is the same choice as a dropdown — the value sits beside its
-   label in the toolbar's own 2px frame, and the list drops out of the bottom
-   edge of it. The width it gives back is what makes room for the
-   rows-per-page control beside it. */
+   label in a 2px frame, and the list drops out of the bottom edge of it.
+   It no longer stands in the toolbar: the filter dock took that job over, and
+   the one caller left is the operator picker inside a chip's popup, which
+   resizes it in 4c below. These base rules stay here so 4c still wins on
+   cascade order; the width the toolbar got back is simply left to
+   `.dt-spacer`, so nothing to its right moved. */
 .dt-root .dt-filter { position: relative; display: flex; }
 .dt-root .dt-filter-btn {
   display: flex; align-items: center; gap: 10px;
@@ -170,6 +181,14 @@
 .dt-root .dt-filter-list li:hover,
 .dt-root .dt-filter-list li:focus { background: var(--dt-surface); outline: none; }
 .dt-root .dt-filter-list li.dt-on { background: var(--dt-accent); color: var(--dt-reversed); }
+/* The list moves focus itself, so the cursor has to be visible on the current
+   option too — and the hover tint is exactly what `.dt-on` paints over. A real
+   ring, inverted on the accent-filled row, after `.dt-on` so it outranks the
+   `outline: none` above at equal specificity. */
+.dt-root .dt-filter-list li:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -2px;
+}
+.dt-root .dt-filter-list li.dt-on:focus-visible { outline-color: var(--dt-reversed); }
 
 /* PORT ADDITION: page size, which the prototype fixes at 8 in its props. */
 .dt-root .dt-rows {
@@ -221,7 +240,469 @@
 /* the system's disabled step */
 .dt-root .dt-btn-secondary:disabled { opacity: .45; cursor: not-allowed; }
 
-/* ---- 4. Table ---- */
+/* ---- 4. Filter dock (PORT ADDITION) ---------------------------------
+
+   The dock is a chain of interlocking blocks. "ADD FILTER" is the head of the
+   chain and every filter clips onto its right, the way a Scratch block accepts
+   the next one — the shape itself says "something goes here", which is the
+   whole reason the dock stopped being a rectangle with a dashed outline.
+
+   The head is also the button that adds one. It and "Clear all" used to be two
+   controls in a rail beside the chain; folding the add into the block the chain
+   already hangs off means the thing you add to and the thing you add with are
+   one object, and the strip is left with nothing on it that is not either a
+   block or the revert that undoes them all. The head is `sticky` rather than
+   scrolling with the chain: it is the only door in, and a door that scrolls
+   away is not one.
+
+   Polarity is socket-on-the-right, plug-on-the-left. It could have gone the
+   other way, and the other way is wrong: a chain that ends in a protruding
+   plug reads as finished, and this chain is never finished. Ending in an open
+   socket means the affordance is always the last thing on the strip, at rest,
+   with no drag in progress and no instruction text needed to carry it.
+
+   The joint is a 45° chamfered wedge — Scratch's geometry, drawn to this
+   system's rules. Scratch's own tab is a rounded bump, which would have been
+   the one soft corner on a screen whose system says radius is 0 everywhere;
+   the chamfer keeps the interlock and loses the radius.
+
+   ---- the geometry -------------------------------------------------
+
+   Every block is --dt-dock-h tall (34px) and joins on a wedge --dt-plug deep
+   (8px). The wedge spans the middle 18px of the height, chamfered 8px in at
+   the top and bottom, so both slopes are exactly 45°. A block's plug lives
+   *inside* its own box (the first 8px of it) and the box is pulled 8px left
+   with a negative margin, so the plug lands in the socket of the block before
+   it. clip-path cannot paint outside the border box, which is why the plug is
+   inset-and-pulled rather than simply drawn overhanging.
+
+   The 2px outline is two stacked clip-paths: the element is filled with ink
+   and clipped to the outer profile, and ::before is filled with the face
+   colour and clipped to that profile inset 2px *perpendicular to each edge*.
+   On the 45° runs a 2px perpendicular inset moves the vertex 2√2 ≈ 2.83px
+   along each axis, not 2px — the 4.83 / 8.83 / 7.17 / 25.17 constants below
+   are that arithmetic, not arbitrary nudges. Inset the naive 2px and the
+   outline visibly thins on the diagonals.
+
+   ::before is a positioned child, so it paints above ordinary inline content;
+   everything meant to sit on the face is lifted to z-index 1 rather than the
+   fill being pushed to -1, which would drop it behind the ink layer instead.
+
+   ---- the strip ----------------------------------------------------
+
+   The chain scrolls sideways; the two things that are not links in it do not.
+   The head block is `sticky`, so the door in stays put while the conditions
+   pass under it, and the revert sits outside the rail altogether. A filter
+   scrolled out of sight is still narrowing the table, which is the one real
+   cost of scrolling over wrapping, so .dt-dock-more keeps a count of what is
+   off the end — outside the scroller too, since a count that can scroll away
+   is worse than none.
+
+   Nothing here draws a frame around the dock any more. The blocks are the
+   object; a box around them was a second, weaker statement of the same thing.
+   ------------------------------------------------------------------- */
+.dt-root .dt-dock {
+  --dt-dock-h: 34px;              /* one control row; every block matches it */
+  --dt-plug: 8px;                 /* wedge depth, and the overlap that mates it */
+  display: flex; align-items: center; gap: 16px;
+  margin: 0 0 18px;
+}
+/* The scroller. `overflow-y` computes to `auto` alongside an `overflow-x` of
+   `auto` whatever it is set to, so this clips vertically too — hence the
+   padding, which keeps the blocks' focus rings off the cut, and hence the
+   popup escaping to `position: fixed` (see 4b). */
+.dt-root .dt-dock-rail {
+  flex: 1 1 auto; min-width: 0;
+  overflow-x: auto; padding: 3px 0;
+  scrollbar-width: thin;
+}
+.dt-root .dt-dock-chain {
+  display: flex; align-items: center; width: max-content;
+}
+/* The blocks. One shape, two entry points: the head has a flat left edge, and
+   everything after it carries a plug. */
+.dt-root .dt-dock-tag,
+.dt-root .dt-chip-shape {
+  position: relative;
+  display: inline-flex; align-items: stretch;
+  height: var(--dt-dock-h);
+  background: var(--dt-ink);
+  transition: background-color 140ms ease;
+  clip-path: polygon(
+    var(--dt-plug) 0,
+    100% 0,
+    calc(100% - var(--dt-plug)) 8px,
+    calc(100% - var(--dt-plug)) 26px,
+    100% 34px,
+    var(--dt-plug) 34px,
+    0 26px,
+    0 8px
+  );
+}
+.dt-root .dt-dock-tag::before,
+.dt-root .dt-chip-shape::before {
+  content: ''; position: absolute; inset: 0; z-index: 0;
+  background: var(--dt-n100);
+  transition: background-color 140ms ease;
+  clip-path: polygon(
+    8.83px 2px,
+    calc(100% - 4.83px) 2px,
+    calc(100% - 10px) 7.17px,
+    calc(100% - 10px) 26.83px,
+    calc(100% - 4.83px) 32px,
+    8.83px 32px,
+    2px 25.17px,
+    2px 8.83px
+  );
+}
+/* The wrapper holds the head block and owns the outside-press check. Sticky, so
+   the door stays put while the chain scrolls under it; z-index 2 puts it over
+   the blocks passing beneath rather than under them. */
+.dt-root .dt-dock-head {
+  position: sticky; left: 0; z-index: 2;
+  flex: 0 0 auto; display: inline-flex;
+}
+/* The head of the chain. Nothing clips onto its left, so it does not pretend
+   to: flat edge, no plug, no negative margin. */
+.dt-root .dt-dock-tag {
+  flex: 0 0 auto; padding: 0 18px 0 14px;
+  align-items: center; gap: 10px;
+  border: none; font: inherit; cursor: pointer;
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    calc(100% - var(--dt-plug)) 8px,
+    calc(100% - var(--dt-plug)) 26px,
+    100% 34px,
+    0 34px
+  );
+}
+.dt-root .dt-dock-tag::before {
+  clip-path: polygon(
+    2px 2px,
+    calc(100% - 4.83px) 2px,
+    calc(100% - 10px) 7.17px,
+    calc(100% - 10px) 26.83px,
+    calc(100% - 4.83px) 32px,
+    2px 32px
+  );
+}
+.dt-root .dt-dock-tag-text {
+  position: relative; z-index: 1;
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600); white-space: nowrap;
+}
+.dt-root .dt-dock-tag-caret {
+  position: relative; z-index: 1;
+  font-size: 8px; line-height: 1; color: var(--dt-n600);
+  transition: transform 180ms ease;
+}
+.dt-root .dt-dock-tag:hover .dt-dock-tag-text,
+.dt-root .dt-dock-tag:hover .dt-dock-tag-caret { color: var(--dt-accent); }
+/* Open: the block inverts, the same move the chips make, so the list below it
+   reads as coming out of this object rather than floating near it. */
+.dt-root .dt-dock-tag.dt-open { background: var(--dt-accent); }
+.dt-root .dt-dock-tag.dt-open::before { background: var(--dt-accent); }
+.dt-root .dt-dock-tag.dt-open .dt-dock-tag-text { color: var(--dt-reversed); }
+.dt-root .dt-dock-tag.dt-open .dt-dock-tag-caret {
+  color: rgba(243, 242, 242, .7); transform: rotate(180deg);
+}
+/* Inside the face, as on the chips: the clip-path would slice a ring drawn on
+   the block's own edge. */
+.dt-root .dt-dock-tag:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -4px;
+}
+.dt-root .dt-dock-tag.dt-open:focus-visible { outline-color: var(--dt-reversed); }
+/* A drag is in flight and this dock can take it: the head goes solid accent,
+   so the open socket at the end of the chain is the brightest thing on the
+   strip. .dt-over adds nothing louder — the socket is the target, and the
+   escalation the old dashed frame needed is what the shape now carries. */
+.dt-root .dt-dock.dt-armed .dt-dock-tag { background: var(--dt-accent); }
+.dt-root .dt-dock.dt-armed .dt-dock-tag::before { background: var(--dt-surface); }
+.dt-root .dt-dock.dt-over .dt-dock-tag::before { background: var(--dt-accent); }
+.dt-root .dt-dock.dt-over .dt-dock-tag-text { color: var(--dt-reversed); }
+/* --dt-n700, not the --dt-n600 of the micro-labels: this is a 12px sentence
+   rather than a 10px label. The socket is the affordance; this only names the
+   gesture that fills it, and it goes away for good at the first block. Same
+   colour as .dt-foot-count and .dt-empty-body, the port's other body copy. */
+.dt-root .dt-dock-empty {
+  display: inline-flex; align-items: center; height: var(--dt-dock-h);
+  padding-left: 14px;
+  margin: 0; font-size: 12px; font-weight: 500; color: var(--dt-n700);
+  white-space: nowrap;
+}
+/* How many blocks are past the right edge. Outside the scroller, because a
+   count that can itself scroll out of view is worse than no count. */
+.dt-root .dt-dock-more {
+  flex: 0 0 auto; margin: 0;
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600); white-space: nowrap;
+}
+/* The revert. A square at block height rather than a block itself: it undoes
+   the chain rather than being a link in it, and giving it a wedge would have
+   said the opposite. It sits to the left of the head, which is the direction
+   the chain is built from — you back out the way you came in.
+
+   It is always on the strip, greyed out until there is something to revert,
+   rather than appearing with the first filter: rendered conditionally it either
+   shoved the head block sideways as it arrived — and the head is the control
+   you had just pressed — or needed a reserved gutter that read as a hole in an
+   empty dock. Present-and-disabled says the same thing and holds its own place.
+
+   Ink on hover, not --dt-danger: this throws away conditions, not records, and
+   red is this system's destructive-only signal. Same call as .dt-chip-remove,
+   and the same one "Reset order" makes for discarding the sort. */
+.dt-root .dt-dock-revert {
+  flex: 0 0 auto;
+  width: var(--dt-dock-h); height: var(--dt-dock-h);
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 2px solid var(--dt-n400); background: transparent;
+  color: var(--dt-n700); cursor: pointer;
+}
+.dt-root .dt-dock-revert svg { display: block; }
+.dt-root .dt-dock-revert:hover,
+.dt-root .dt-dock-revert:focus-visible {
+  border-color: var(--dt-ink); background: var(--dt-ink); color: var(--dt-reversed);
+}
+/* The system's disabled step, the same one .dt-pop-foot's Clear takes — and
+   after the hover rule, which would otherwise light it up under a pointer that
+   cannot use it. */
+.dt-root .dt-dock-revert:disabled { opacity: .45; cursor: not-allowed; }
+.dt-root .dt-dock-revert:disabled:hover {
+  border-color: var(--dt-n400); background: transparent; color: var(--dt-n700);
+}
+
+/* ---- 4a. The chip ---- */
+/* The wrapper is not the shape: it holds the shape and the popup as siblings,
+   because clip-path clips descendants and a popup inside the clipped block
+   would be sliced along the wedge. */
+.dt-root .dt-chip {
+  flex: 0 0 auto;
+  margin-left: calc(var(--dt-plug) * -1);   /* plug into the block before it */
+}
+.dt-root .dt-chip-shape { flex: 0 0 auto; }
+/* Content clears the joint at both ends: the plug on the left, the socket bite
+   on the right. */
+.dt-root .dt-chip-btn {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 6px 18px; border: none; background: transparent;
+  color: var(--dt-ink); cursor: pointer; text-align: left;
+}
+.dt-root .dt-chip-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600); white-space: nowrap;
+}
+/* describeCondition() returns sentence case; the caps are this system's, not
+   the string's. An enum chip listing four values would otherwise be wider
+   than the column it filters, hence the ellipsis. */
+.dt-root .dt-chip-value {
+  font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; white-space: nowrap;
+  max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
+}
+.dt-root .dt-chip-caret {
+  font-size: 8px; line-height: 1; color: var(--dt-n600);
+  transition: transform 180ms ease;
+}
+/* No operand chosen yet, so the condition matches everything. The old dashed
+   frame said this; a block cannot go dashed without the wedge going dashed
+   with it and the joint falling apart, so the unfinished state moves inside:
+   the face drops to the darker ground and the value greys out. A block that
+   has not been filled in looks hollow rather than outlined. */
+.dt-root .dt-chip.dt-idle .dt-chip-shape::before { background: var(--dt-surface); }
+.dt-root .dt-chip.dt-idle .dt-chip-value { color: var(--dt-n500); }
+/* Open: the whole block inverts, so the popup below it reads as the same
+   object rather than a panel that happens to be near it. */
+.dt-root .dt-chip.dt-open .dt-chip-shape { background: var(--dt-accent); }
+.dt-root .dt-chip.dt-open .dt-chip-shape::before { background: var(--dt-accent); }
+.dt-root .dt-chip.dt-open .dt-chip-btn { color: var(--dt-reversed); }
+.dt-root .dt-chip.dt-open .dt-chip-tag,
+.dt-root .dt-chip.dt-open .dt-chip-caret { color: rgba(243, 242, 242, .7); }
+.dt-root .dt-chip.dt-open .dt-chip-caret { transform: rotate(180deg); }
+/* open *and* still empty: --dt-n500 is unreadable on the accent, so the muted
+   step is taken out of the reversed ink instead */
+.dt-root .dt-chip.dt-open.dt-idle .dt-chip-value { color: rgba(243, 242, 242, .6); }
+/* The remove sits before the socket, split from the label by the same 2px the
+   block is outlined in — drawn as a real border on the face layer, since the
+   block itself has no borders left to give. Ink, not --dt-danger: removing a
+   filter destroys no data ("Add filter" puts it back in two keystrokes) and
+   red is this system's destructive-only signal, the same call
+   .dt-icon-btn.dt-save makes below. */
+.dt-root .dt-chip-remove {
+  position: relative; z-index: 1;
+  flex: 0 0 auto; width: 26px; margin-right: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: none; border-left: 2px solid var(--dt-ink);
+  background: transparent; color: var(--dt-n700);
+  cursor: pointer;
+}
+/* The contract named a text `×` here; the TSX renders CrossIcon instead, so
+   that it is a Lucide trace like every other mark in the port rather than the
+   one glyph whose weight comes from the font. Hence no font-size — an SVG with
+   explicit width/height does not read one — and `display: block`, the same
+   idiom .dt-pop-opts uses, so no inline baseline gap creeps in. */
+.dt-root .dt-chip-remove svg { display: block; }
+.dt-root .dt-chip.dt-idle .dt-chip-remove { border-left-color: var(--dt-n400); }
+.dt-root .dt-chip.dt-open .dt-chip-remove { border-left-color: var(--dt-reversed); color: var(--dt-reversed); }
+.dt-root .dt-chip-remove:hover,
+.dt-root .dt-chip-remove:focus-visible { background: var(--dt-ink); color: var(--dt-reversed); }
+.dt-root .dt-chip.dt-open .dt-chip-remove:hover,
+.dt-root .dt-chip.dt-open .dt-chip-remove:focus-visible {
+  background: var(--dt-reversed); color: var(--dt-accent);
+}
+/* The block face is the hit area, but the clip-path means the focus ring would
+   be sliced along the wedge. It is drawn inside the face instead. */
+.dt-root .dt-chip-btn:focus-visible,
+.dt-root .dt-dock-tag:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -4px;
+}
+.dt-root .dt-chip.dt-open .dt-chip-btn:focus-visible { outline-color: var(--dt-reversed); }
+
+/* ---- 4b. The chip popup ---- */
+/* `position: fixed`, with the coordinates set from the block's own rect by the
+   TSX. Two ancestors would otherwise eat it: .dt-dock-rail scrolls, which
+   clips on both axes, and .dt-chip-shape is clip-path'd. A fixed box escapes
+   both. The z-index is what a flat system has instead of a shadow — nothing
+   else separates this from the table underneath it. */
+.dt-root .dt-chip-pop {
+  position: fixed; z-index: 30;
+  width: 268px; max-width: calc(100vw - 32px);
+  border: 2px solid var(--dt-accent);
+  background: var(--dt-n100);
+  animation: dt-menu-in 140ms ease;
+}
+.dt-root .dt-pop-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px; border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-pop-label {
+  flex: 0 0 auto;
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600);
+}
+.dt-root .dt-pop-input {
+  flex: 1 1 auto; min-width: 0; padding: 6px 8px;
+  border: 2px solid var(--dt-ink); border-radius: 0;
+  background: var(--dt-n100); color: var(--dt-ink);
+  font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.dt-root .dt-pop-input:focus { border-color: var(--dt-accent); }
+/* The enum list. The check sits at the far end of the row rather than in
+   front of the label, so an option that gains or loses it does not shift its
+   own text — the TSX is free to render the icon conditionally. */
+.dt-root .dt-pop-opts {
+  margin: 0; padding: 0; list-style: none;
+  max-height: 208px; overflow-y: auto;
+  border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-pop-opts li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px; cursor: pointer;
+  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-pop-opts li:last-child { border-bottom: none; }
+.dt-root .dt-pop-opts li:hover,
+.dt-root .dt-pop-opts li:focus { background: var(--dt-surface); outline: none; }
+.dt-root .dt-pop-opts li.dt-on { background: var(--dt-accent); color: var(--dt-reversed); }
+.dt-root .dt-pop-opts li svg { flex: 0 0 auto; display: block; }
+/* This list is roving-focus AND multi-select, so it is the one place in the
+   port where the keyboard cursor and the chosen state are different things and
+   both have to show. The hover tint cannot carry it (a ticked row is already
+   accent-filled and would swallow it), so the cursor is a real ring — inverted
+   on the filled rows exactly as the header's grips are. Must come after
+   `.dt-on`, which matches at the same specificity. */
+.dt-root .dt-pop-opts li:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -2px;
+}
+.dt-root .dt-pop-opts li.dt-on:focus-visible { outline-color: var(--dt-reversed); }
+/* The foot's two buttons carry no classes in the agreed DOM, so they are
+   addressed by position: Clear first, Done last. */
+.dt-root .dt-pop-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+}
+.dt-root .dt-pop-foot button {
+  padding: 6px 13px; border: 2px solid var(--dt-n400); background: transparent;
+  color: var(--dt-n700); font-size: 10px; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; cursor: pointer;
+}
+.dt-root .dt-pop-foot button:hover { border-color: var(--dt-ink); color: var(--dt-ink); }
+/* Clear ships disabled on every chip a drop creates (there is nothing to clear
+   yet), so it needs the system's disabled step — after the hover rule, which
+   would otherwise light it up under a pointer that cannot use it. */
+.dt-root .dt-pop-foot button:disabled { opacity: .45; cursor: not-allowed; }
+.dt-root .dt-pop-foot button:disabled:hover { border-color: var(--dt-n400); color: var(--dt-n700); }
+.dt-root .dt-pop-foot button:last-child {
+  border-color: var(--dt-accent); background: var(--dt-accent); color: var(--dt-reversed);
+}
+
+/* ---- 4c. FilterMenu, nested ---- */
+/* <FilterMenu> is reused for the operator, and it was drawn for the toolbar:
+   an ink-framed control that sits on the page. Inside a popup that is already
+   framed, that second heavy box reads as a control someone dropped in. It is
+   demoted to the row's own hairline weight and stretched to fill the row, so
+   it reads as this panel's operator field. */
+.dt-root .dt-chip-pop .dt-filter { flex: 1 1 auto; min-width: 0; }
+.dt-root .dt-chip-pop .dt-filter-btn {
+  flex: 1 1 auto; min-width: 0;
+  padding: 6px 10px; border-color: var(--dt-n400);
+}
+/* Stretching the button must not scatter its contents: the tag and the value
+   stay packed at the left padding edge on the base rule's 10px gap — a label
+   flush left is the system's rule, in buttons too — and only the caret is
+   pushed to the far end. `justify-content: space-between` was tried and
+   stranded the operator's own words in the middle of the field. */
+.dt-root .dt-chip-pop .dt-filter-caret { margin-left: auto; }
+.dt-root .dt-chip-pop .dt-filter-value { overflow: hidden; text-overflow: ellipsis; }
+.dt-root .dt-chip-pop .dt-filter-btn.dt-open { border-color: var(--dt-accent); }
+/* left *and* right, so the list matches the button it came out of instead of
+   the 220px minimum the toolbar's copy wants */
+.dt-root .dt-chip-pop .dt-filter-list {
+  left: -2px; right: -2px; min-width: 0; border-color: var(--dt-accent);
+}
+
+/* ---- 4d. The column picker ---- */
+/* `position: fixed`, coordinates from the head block's own rect — the same
+   escape the chip popup makes, and for the same two reasons: the rail scrolls
+   (which clips on both axes) and the block is clip-path'd. See useAnchoredPanel
+   in FilterDock.tsx.
+
+   Accent-framed all round rather than top-less. The list used to hang off the
+   flat bottom edge of a rectangular button and borrow it; the head block's
+   bottom edge is now a clipped wedge profile, so there is no straight edge
+   there to borrow and the panel closes its own frame. */
+.dt-root .dt-dock-add-list {
+  position: fixed; z-index: 30;
+  margin: 0; padding: 0; list-style: none; min-width: 232px;
+  border: 2px solid var(--dt-accent);
+  background: var(--dt-n100);
+  animation: dt-menu-in 140ms ease;
+}
+.dt-root .dt-dock-add-list li {
+  padding: 10px 13px; white-space: nowrap; cursor: pointer;
+  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-dock-add-list li:last-child { border-bottom: none; }
+.dt-root .dt-dock-add-list li:hover,
+.dt-root .dt-dock-add-list li:focus { background: var(--dt-surface); outline: none; }
+/* The arrows move focus itself here, and the hover tint is a 1.05:1 step that
+   cannot carry a cursor on its own — same ring as .dt-pop-opts, same reason. */
+.dt-root .dt-dock-add-list li:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -2px;
+}
+/* already docked — listed so the set of columns stays legible, but the
+   system's disabled step says it is not a target */
+.dt-root .dt-dock-add-list li[aria-disabled="true"] {
+  opacity: .45; cursor: not-allowed;
+}
+.dt-root .dt-dock-add-list li[aria-disabled="true"]:hover,
+.dt-root .dt-dock-add-list li[aria-disabled="true"]:focus { background: transparent; }
+
+/* ---- 5. Table ---- */
 .dt-root .dt-table-scroll { overflow-x: auto; }
 .dt-root table {
   width: 100%; min-width: 1222px;
@@ -404,7 +885,11 @@
    so there is no flash of full height on the last frame. */
 .dt-root .dt-detail-grid.dt-collapsing { animation: dt-collapse 180ms ease-in-out forwards; }
 .dt-root .dt-pane { background: var(--dt-n100); padding: 16px 18px; }
-.dt-root .dt-pane-wide { grid-column: span 4; }
+/* PORT ADDITION: the note shares its row with one pane now that Email is in
+   the grid, so it takes the three columns Email leaves it. The grid is
+   repeat(4, 1fr) and every cell is painted — a span that does not add up
+   leaves a --dt-n300 hole where the gap shows through. */
+.dt-root .dt-pane-rest { grid-column: span 3; }
 .dt-root .dt-pane-label {
   font-size: 10px; font-weight: 700; letter-spacing: .16em;
   text-transform: uppercase; color: var(--dt-n600); margin-bottom: 8px;
@@ -417,7 +902,7 @@
 .dt-root .dt-empty-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
 .dt-root .dt-empty-body { font-size: 13px; color: var(--dt-n700); }
 
-/* ---- 5. Footer ---- */
+/* ---- 6. Footer ---- */
 .dt-root .dt-foot {
   display: flex; align-items: center; justify-content: space-between;
   gap: 24px; padding: 18px 0 0; border-top: 2px solid var(--dt-ink); flex-wrap: wrap;
@@ -507,6 +992,32 @@
 /* the anchor keeps whatever the row is painted with — zebra, selected, armed */
 .dt-root td.dt-range.dt-range-active { background: transparent; }
 
+/* ---- The sum readout (PORT ADDITION) ---------------------------------
+   The total for the cell selection, when it has one. It lives in the toolbar,
+   in the accent, immediately before the selection actions — after the flex
+   spacer, so appearing and disappearing never moves the buttons beside it. It
+   slides in from their side and fades back out the same way; the exit is held
+   open by a timer in the component, because an unmounted element cannot
+   animate. */
+.dt-root .dt-sum {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px;
+  border: 2px solid var(--dt-accent); background: var(--dt-accent);
+  color: var(--dt-reversed);
+  animation: dt-sum-in 140ms ease;
+}
+.dt-root .dt-sum.dt-out { animation: dt-sum-out 160ms ease forwards; }
+.dt-root .dt-sum-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: rgba(243, 242, 242, .7);
+}
+.dt-root .dt-sum-value {
+  font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+
+/* Counts line up column-wise, the way a number column should. */
+.dt-root td[data-key="solvedCases"] { font-variant-numeric: tabular-nums; }
+
 /* Must come last: these override the `animation` / `transition` shorthands
    above at equal specificity, so source order decides. Animations are
    shortened rather than disabled — the collapsing pane is unmounted by its
@@ -532,6 +1043,15 @@
 .dt-root[data-dt-motion="never"] .dt-caret,
 .dt-root[data-dt-motion="never"] .dt-filter-caret,
 .dt-root[data-dt-motion="never"] .dt-filter-list,
+.dt-root[data-dt-motion="never"] .dt-sum,
+.dt-root[data-dt-motion="never"] .dt-dock-tag,
+.dt-root[data-dt-motion="never"] .dt-dock-tag::before,
+.dt-root[data-dt-motion="never"] .dt-chip-shape,
+.dt-root[data-dt-motion="never"] .dt-chip-shape::before,
+.dt-root[data-dt-motion="never"] .dt-dock-tag-caret,
+.dt-root[data-dt-motion="never"] .dt-chip-caret,
+.dt-root[data-dt-motion="never"] .dt-chip-pop,
+.dt-root[data-dt-motion="never"] .dt-dock-add-list,
 .dt-root[data-dt-motion="never"] .dt-flipping { transition-duration: 1ms; animation-duration: 1ms; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -541,5 +1061,14 @@
   .dt-root:not([data-dt-motion="always"]) .dt-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-filter-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-filter-list,
+  .dt-root:not([data-dt-motion="always"]) .dt-sum,
+  .dt-root:not([data-dt-motion="always"]) .dt-dock-tag,
+  .dt-root:not([data-dt-motion="always"]) .dt-dock-tag::before,
+  .dt-root:not([data-dt-motion="always"]) .dt-chip-shape,
+  .dt-root:not([data-dt-motion="always"]) .dt-chip-shape::before,
+  .dt-root:not([data-dt-motion="always"]) .dt-dock-tag-caret,
+  .dt-root:not([data-dt-motion="always"]) .dt-chip-caret,
+  .dt-root:not([data-dt-motion="always"]) .dt-chip-pop,
+  .dt-root:not([data-dt-motion="always"]) .dt-dock-add-list,
   .dt-root:not([data-dt-motion="always"]) .dt-flipping { transition-duration: 1ms; animation-duration: 1ms; }
 }

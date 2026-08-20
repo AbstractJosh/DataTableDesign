@@ -1,18 +1,20 @@
 /**
- * The status filter.
+ * The select-only combobox: a button that owns the current value plus a listbox
+ * popup, rather than a native `<select>`, whose popup is drawn by the OS and
+ * cannot carry the system's flat, square, accent-marked styling.
  *
- * The prototype spends the whole width of a four-position segmented switch on
- * this (with a selector that slides between the options); a dropdown makes the
- * same choice in a quarter of the space, which is what leaves room for the
- * rows-per-page control beside it.
+ * It began life as the toolbar's "Status" dropdown — the prototype spends the
+ * whole width of a four-position segmented switch on that one choice. The
+ * filter dock has since taken that job over (status is one condition among
+ * several there now), so the single caller left is the operator picker inside a
+ * filter chip's popup. Nothing here knows about filters: it is a list of values
+ * and a way to pick one, and it should stay that way.
  *
- * It is the select-only combobox pattern — a button that owns the value plus a
- * listbox popup — rather than a native `<select>`, whose popup is drawn by the
- * OS and cannot carry the system's flat, square, accent-marked styling. That
- * means the keyboard contract is ours to honour: the button opens on
+ * Because the popup is ours, so is the keyboard contract: the button opens on
  * Enter / Space / arrow, the list moves on the arrows and Home / End, Enter or
  * Space commits, Escape closes without committing, and focus comes back to the
- * button either way.
+ * button either way. Everything else in the port that opens a list copies these
+ * idioms — keep them all answering the keys identically.
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
@@ -21,6 +23,12 @@ export interface FilterMenuProps<T extends string> {
   options: readonly T[]
   /** The word above the value, and the listbox's accessible name. */
   label: string
+  /**
+   * How an option reads on screen, for callers whose stored value is not the
+   * words the user should see — a filter operator is held as `'notContains'`
+   * and shown as "does not contain". Identity by default.
+   */
+  format?: (option: T) => string
   onPick: (next: T) => void
 }
 
@@ -28,6 +36,7 @@ export function FilterMenu<T extends string>({
   value,
   options,
   label,
+  format = (option) => option,
   onPick,
 }: FilterMenuProps<T>) {
   const [open, setOpen] = useState(false)
@@ -129,7 +138,7 @@ export function FilterMenu<T extends string>({
         onKeyDown={onButtonKeyDown}
       >
         <span className="dt-filter-tag">{label}</span>
-        <span className="dt-filter-value">{value}</span>
+        <span className="dt-filter-value">{format(value)}</span>
         <span className="dt-filter-caret" aria-hidden="true">
           ▼
         </span>
@@ -154,7 +163,7 @@ export function FilterMenu<T extends string>({
               className={option === value ? 'dt-on' : undefined}
               onClick={() => pick(option)}
             >
-              {option}
+              {format(option)}
             </li>
           ))}
         </ul>

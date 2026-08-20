@@ -135,6 +135,64 @@ export function rangeHtml(
   return `<table><tbody>${body.join('')}</tbody></table>`
 }
 
+/* ---- the sum readout --------------------------------------------- */
+
+export interface RangeSum {
+  /** Already rounded to `decimals`, so no float noise reaches the screen. */
+  total: number
+  /** How many cells went into it — blanks are not among them. */
+  count: number
+  decimals: number
+}
+
+/**
+ * The sum of the rectangle, or `null` when it does not have one.
+ *
+ * A cell that is not a number rules the whole selection out — the point is to
+ * answer "what do these add up to", and a column of names has no answer. Blank
+ * cells are skipped rather than counted as zero, the way a spreadsheet skips
+ * them, and one lone number is not a sum worth floating a panel for.
+ */
+export function rangeSum(
+  rows: DataTableRecord[],
+  cols: ColumnKey[],
+  rect: RangeRect,
+): RangeSum | null {
+  let total = 0
+  let count = 0
+  let decimals = 0
+
+  for (let r = rect.top; r <= rect.bottom; r += 1) {
+    const record = rows[r]
+    if (!record) continue
+    for (let c = rect.left; c <= rect.right; c += 1) {
+      const raw = cellValue(record, cols[c]).trim()
+      if (!raw) continue
+
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return null
+
+      total += value
+      count += 1
+      const point = raw.indexOf('.')
+      if (point >= 0) decimals = Math.max(decimals, raw.length - point - 1)
+    }
+  }
+
+  if (count < 2) return null
+  decimals = Math.min(decimals, 6)
+  // 0.1 + 0.2 is 0.30000000000000004 until it is put back to one decimal
+  return { total: Number(total.toFixed(decimals)), count, decimals }
+}
+
+/** Grouped in the reader's locale, and never with more decimals than went in. */
+export function formatSum({ total, decimals }: RangeSum): string {
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(total)
+}
+
 /**
  * Three routes to the clipboard, in descending order of fidelity: the async API
  * with both flavours, the async API with text only, and the old
