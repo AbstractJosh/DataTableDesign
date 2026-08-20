@@ -7,6 +7,13 @@
 import type { CellRange, CellRef } from './cellRange'
 import { ENUM_OPTIONS, newCondition, type FilterCondition, type FilterOp } from './filters'
 import {
+  metricCategory,
+  normaliseMetricPrefs,
+  setMetricPref,
+  type MetricKey,
+  type MetricPrefs,
+} from './metrics'
+import {
   DEFAULT_COLUMNS,
   type ColumnKey,
   type DraftRecord,
@@ -32,6 +39,17 @@ export interface TableState {
   page: number
   /** Owned here, not by the prop: the toolbar's slider changes it. */
   rowsPerPage: number
+  /**
+   * PORT ADDITION: what each *kind* of cell content should read as — one
+   * preference per category, not one metric for the whole table. Which of them
+   * the flow block uses is decided by the rectangle, not by this record: the
+   * cells are read, their category worked out, and that category's preference
+   * is what answers. See metrics.ts.
+   *
+   * Owned here for the same reason `rowsPerPage` is — the prop seeds it and the
+   * toolbar's selector owns it from then on.
+   */
+  metrics: MetricPrefs
   /** Record id whose fields are armed for editing (the pencil is pressed). */
   picking: string | null
   /** The one field currently open in an editor. */
@@ -59,10 +77,17 @@ export const DEFAULT_ROWS_PER_PAGE = 8
 export function initialState(
   cols: ColumnKey[] = DEFAULT_COLUMNS,
   rowsPerPage: number = DEFAULT_ROWS_PER_PAGE,
+  metrics?: Partial<MetricPrefs> | null,
 ): TableState {
   return {
     cols: cols.slice(),
     rowsPerPage,
+    // Merged over the defaults rather than trusted, so the record is total from
+    // the first render and every section of the selector has a pick to draw as
+    // current. A rate key is a template literal type, so `rate:nonsense`
+    // type-checks; so does a real metric filed under the wrong category. Both
+    // are dropped here and the default kept. See metrics.ts.
+    metrics: normaliseMetricPrefs(metrics),
     selected: {},
     expanded: {},
     sort: null,
@@ -92,12 +117,16 @@ export type TableAction =
   | { type: 'clearConditions' }
   | { type: 'setPage'; page: number }
   | { type: 'setRowsPerPage'; rows: number }
+  /**
+   * The toolbar's "Show" selector: one category's preference. Which category is
+   * not on the action, because the key already names it — see the case.
+   */
+  | { type: 'setMetric'; metric: MetricKey }
   /** Silently follow a shrinking result set; not a navigation. */
   | { type: 'clampPage'; page: number }
   | { type: 'toggleSort'; key: ColumnKey }
-  | { type: 'resetOrder'; cols: ColumnKey[] }
   | { type: 'moveColumn'; from: ColumnKey; to: ColumnKey }
-  /** Put a whole column order back, sort intact — unlike `resetOrder`. */
+  /** Put a whole column order back, sort intact. */
   | { type: 'setColumnOrder'; cols: ColumnKey[] }
   /** A row reorder clears any active sort; a column reorder does not. */
   | { type: 'rowsReordered' }
@@ -184,6 +213,11 @@ const KEEPS_RANGE: ReadonlySet<TableAction['type']> = new Set<TableAction['type'
   'collapse',
   'endEnter',
   'endCollapse',
+  // Load-bearing. The flow block reports on the rectangle, so setting the
+  // preference it reads under cannot be what takes the rectangle away — the
+  // block would vanish on the press that asked it to change, and the selector
+  // stays open precisely so a second category can be set after the first.
+  'setMetric',
 ])
 
 /** Drop the per-row modes and cancel any animation still in flight. */
@@ -328,6 +362,20 @@ function apply(state: TableState, action: TableAction): TableState {
       }
     }
 
+    case 'setMetric': {
+      // The action carries a metric and no category, because a metric names its
+      // own: `'mean'` is the number category's, `rate:status:Success` is
+      // Status's. `metricCategory` is that derivation written down, and it is
+      // total — a key that names no metric names no category either, and then
+      // this changes nothing rather than overwriting a preference at random.
+      const category = metricCategory(action.metric)
+      if (!category) return state
+      // No `cleared`: this one deliberately keeps the range (see KEEPS_RANGE),
+      // and there is nothing else about it a row's mode depends on.
+      const metrics = setMetricPref(state.metrics, action.metric)
+      return metrics === state.metrics ? state : { ...state, metrics }
+    }
+
     case 'clampPage':
       // The prototype clamps `state.page` inside render() without running
       // clearEditing(), so an armed row survives a delete that shortens the
@@ -346,9 +394,6 @@ function apply(state: TableState, action: TableAction): TableState {
       return { ...state, sort }
     }
 
-    case 'resetOrder':
-      return { ...cleared(state), sort: null, cols: action.cols.slice() }
-
     case 'moveColumn': {
       const from = state.cols.indexOf(action.from)
       const to = state.cols.indexOf(action.to)
@@ -359,12 +404,10 @@ function apply(state: TableState, action: TableAction): TableState {
     }
 
     case 'setColumnOrder':
-      // Not `resetOrder`: that one is the toolbar button, and drops the sort
-      // along with the order. This puts an order back verbatim, sort intact —
-      // a column dragged up to the filter dock reorders the header on its way
-      // past its neighbours, and the drop has to undo that before the chip
-      // appears. No `cleared` for the same reason `moveColumn` has none: it is
-      // the tail of a drag, not a click.
+      // Puts an order back verbatim, sort intact — a column dragged up to the
+      // filter dock reorders the header on its way past its neighbours, and the
+      // drop has to undo that before the chip appears. No `cleared` for the same
+      // reason `moveColumn` has none: it is the tail of a drag, not a click.
       return { ...state, cols: action.cols.slice() }
 
     case 'rowsReordered':

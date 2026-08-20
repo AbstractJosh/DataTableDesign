@@ -6,9 +6,10 @@ component. One import, zero runtime dependencies, one stylesheet.
 Search, a drag-to-build filter dock, an adjustable page size, column sort, row
 selection, expandable detail rows, inline editing, a draft "new record" row,
 in-place delete confirmation, drag-to-reorder rows *and* columns (from their
-grips), Excel-style cell-range selection with copy, and pagination — with the
-prototype's animations kept: the measured-height detail expand, the FLIP
-reorder slide, and the caret/chevron rotations.
+grips), Excel-style cell-range selection with copy and a readout of what the
+selected cells come to, and pagination — with the prototype's animations kept:
+the measured-height detail expand, the FLIP reorder slide, and the
+caret/chevron rotations.
 
 Design source: `../data-table.html` (the interactive prototype) and
 `../design_handoff_data_table/README.md` (the written spec). `PARITY.md` in this
@@ -68,11 +69,13 @@ own the list.
 | `records` | `DataTableRecord[]` | — | Controlled record list. |
 | `defaultRecords` | `DataTableRecord[]` | the demo set | Initial list when uncontrolled. |
 | `onRecordsChange` | `(next) => void` | — | Add, edit, delete, reorder. |
-| `columns` | `ColumnKey[]` | all six | Initial column order; also what **Reset order** restores. |
+| `columns` | `ColumnKey[]` | all six | Initial column order. The header grips own it from then on; nothing puts it back. |
 | `accentColor` | `string` | `#1d2d46` | Header bar, primary button, open filter chip, active page, selection rules, pencil, chevron. |
 | `density` | `'comfortable' \| 'compact'` | `comfortable` | 15px or 9px vertical cell padding. |
 | `rowsPerPage` | `number` | `8` | The page size the table **opens on**; the toolbar's slider owns it after that. |
 | `onRowsPerPageChange` | `(rows) => void` | — | Fired when that slider moves. |
+| `metrics` | `Partial<MetricPrefs>` | Sum, Success rate, Spring rate | What each **kind** of cell content reads as in the flow block. Merged over the defaults; read once, like `rowsPerPage`. See **The flow block**. |
+| `onMetricsChange` | `(prefs) => void` | — | Fired when the toolbar's **Show** panel moves one of them. Carries the whole record, not the one that moved. |
 | `zebraRows` | `boolean` | `true` | Odd rows on `#f8f4f4`. |
 | `title` | `string` | `Data table` | |
 | `kicker` | `string` | `Records / Directory` | |
@@ -202,32 +205,78 @@ every other cell `-1`, so Tab still steps *past* the table rather than through
 150 cells. Buttons inside cells keep their own clicks and keys — pressing the
 row chevron only becomes a selection if the pointer leaves that cell first.
 
-### The sum
+### The flow block
 
-Select a run of cells that are all numbers and a panel appears in the toolbar,
-just left of **Export**, with their total. It is meant for the **Solved cases**
-column, but it is not tied to it: any selection whose cells all parse as
-numbers gets one.
+Select a run of cells that are all the same kind of thing and a panel appears in
+the toolbar, just left of **Export**, saying what they come to. A run of numbers
+totals; a run of **Status** cells reads as a rate. It is meant for the **Solved
+cases** column, but it is not tied to it — or to any column: what a rectangle
+answers is decided by what is *in* it, not by which columns it covers, so it
+keeps working when a host swaps the column set out.
+
+**What each kind reads as is a preference, not a mode.** The **Show** selector at
+the right of the toolbar holds one metric per kind of cell content — Sum,
+Product, Mean, Median, Highest or Lowest for numbers, and one rate per value for
+each enum column (Status, Favourite season) — and the *selection* decides which
+of them is in force. Set numbers to Mean once, and from then on dragging across
+counts reads a mean while dragging across statuses reads whatever the Status
+preference says, with nothing to change in between. The button names the metric
+on show rather than a setting of its own, so it tracks the selection; with
+nothing selected it falls back to the numbers preference.
+
+The panel is one section per kind, each its own radio group with its own current
+pick, and the section the selection is being read under is marked. A pick commits
+immediately and leaves the panel open, so one visit can set more than one kind.
+`metrics` seeds the record — partially, naming only the kinds you care about —
+and `onMetricsChange` reports the whole of it back.
+
+The rules are a spreadsheet's, and all of them predate the selector. Blank cells
+are skipped rather than counted as zero; a rectangle that is not all one kind
+takes the panel away entirely, because "what do these come to" has no answer for
+a column of names, for a column of dates, or for half counts and half statuses;
+and two cells is the floor everywhere — one lone value is not a sum, and "100% of
+one cell" is not a rate. A total carries no more decimals than went into it, so
+`0.1 + 0.2` reads `0.3`; a mean or a median, being derived rather than one of the
+cells, is allowed two places past that; a product too big to read comes out in
+exponent form; and a rate is at most one decimal, with the count it was taken
+over beside it — `62.5% (5 of 8)`. Everything is formatted in the reader's
+locale.
 
 It sits after the toolbar's flex spacer, so it appears and disappears in the
 gap — the buttons beside it never move. It slides in from their side and fades
 back out the same way; the exit is held open by a timer, because an unmounted
-element cannot animate, and it is skipped entirely when motion is off.
+element cannot animate, and it is skipped entirely when motion is off. The
+selector beside it is a fixed width, so the toolbar does not shift when the
+reading changes what it is called.
 
-The rules are a spreadsheet's. Blank cells are skipped rather than counted as
-zero; a single cell that is not a number takes the panel away entirely, because
-"what do these add up to" has no answer for a column of names; and one lone
-value is not shown as a sum. The total carries no more decimals than went into
-it, so `0.1 + 0.2` reads `0.3`, and it is grouped in the reader's locale.
-
-The panel is `aria-hidden`, with the total appended to the live region that
-announces the selection instead.
+The block is `aria-hidden`, with the reading appended to the live region that
+announces the selection instead — in sentence case, and naming the metric
+actually in force: "Mean 42.5.", "Success rate 62.5%."
 
 Not supported: Ctrl+click for a second rectangle, pasting, clearing cells, and
 auto-scrolling the horizontal overflow while sweeping past its edge.
 
 `cellSelection={false}` turns all of it off and gives the cells back plain text
 selection.
+
+As with the dock, what is exported is the engine underneath, for a host that
+wants to store the preferences between visits or offer its own control over the
+same choice:
+
+```ts
+import {
+  DEFAULT_METRIC_PREFS, METRIC_GROUPS, metricFor, metricLabel,
+  normaliseMetricPrefs, setMetricPref,
+  type MetricKey, type MetricPrefs,
+} from '@alp/data-table'
+
+const prefs = normaliseMetricPrefs(JSON.parse(localStorage.metrics ?? 'null'))
+```
+
+`normaliseMetricPrefs` is the guard the component runs on the way in — it drops
+an unknown kind, a key that names no metric, and a real metric filed under the
+wrong kind — so storage that has gone stale reads as the defaults rather than as
+a blank block.
 
 ## Styling
 
@@ -288,9 +337,9 @@ The animations themselves:
 | detail pane open | `200ms` `dt-expand`, to the pane's **measured** height |
 | detail pane close | `180ms` `dt-collapse`, from the height measured at the click |
 | row / column reorder | FLIP, `200ms cubic-bezier(.2,.7,.3,1)` |
-| filter chip popup, operator menu, add-filter list | `140ms` `dt-menu-in`, plus a `180ms ease` caret |
+| filter chip popup, operator menu, add-filter list, the **Show** panel | `140ms` `dt-menu-in`, plus a `180ms ease` caret |
 | filter block face, idle → armed → over → open | `140ms ease` background |
-| sum panel | `140ms` `dt-sum-in`, `160ms` `dt-sum-out` |
+| flow block | `140ms` `dt-sum-in`, `160ms` `dt-sum-out` |
 | sort caret, row chevron | `180ms ease` rotation and colour |
 
 ## Keyboard and accessibility
@@ -304,19 +353,22 @@ prototype could only do by drag:
 | `Alt` + `←` / `→` on a column grip | move that column |
 | arrows / `Shift`+arrows in a cell | move / stretch the cell range (see **Selecting cells**) |
 | `Ctrl`/`Cmd` + `A` / `C` in a cell | select the page / copy the range |
-| any all-numeric selection | totals in a panel at the bottom right (see **The sum**) |
+| any single-kind selection | reads out in a panel in the toolbar (see **The flow block**) |
 | `Enter` in a cell editor | commit the field |
 | `Enter` in the draft row | save the record |
 | `Escape` (focus inside the table) | back out one level: delete confirmation → open editor → draft row → armed row → cell range |
 | `↓` / `Enter` / `Space` on **Add filter** | open the column list; arrows and `Home` / `End` move, `Enter` adds a chip, `Escape` closes |
 | inside a filter chip | the operator menu answers the same keys; the value list is multi-select, so `Enter` / `Space` ticks rather than commits; `Escape` closes the chip and goes back to its button |
+| `↓` / `Enter` / `Space` on **Show** | open the preferences panel; arrows and `Home` / `End` move within a section, `Tab` crosses to the next, `Enter` / `Space` picks *without* closing, `Escape` closes and goes back to the button |
 | `←` / `→` on the rows-per-page slider | one row at a time (`Home` / `End` for the ends) |
 
 Moves are announced through a polite live region. Sorted columns carry
 `aria-sort`, the selection boxes `aria-pressed`, the dock's operator and value
 lists `aria-selected` (they are `role="listbox"` popups, not toggle buttons —
 the add-picker marks the columns already docked `aria-disabled` instead), the
-chip buttons `aria-haspopup="dialog"` + `aria-expanded`, the row chevrons
+**Show** panel's sections `role="radiogroup"` over `aria-checked` radios (one
+pick each, which is what makes them radios rather than a listbox), the chip
+buttons `aria-haspopup="dialog"` + `aria-expanded`, the row chevrons
 `aria-expanded`, and the current page `aria-current`. Focus rings are
 `:focus-visible` only, 2px in the accent.
 
@@ -331,7 +383,7 @@ swap the handlers and keep the FLIP hook.
 ```
 npm install
 npm run dev        # the demo at localhost:5173, with a prop harness
-npm test           # 163 behaviour tests (vitest + jsdom)
+npm test           # 226 behaviour tests (vitest + jsdom)
 npm run typecheck
 npm run build      # dist/index.js + dist/data-table.css + dist/fonts
 ```
@@ -360,6 +412,18 @@ host app makes it unsafe:
   dropdown the switch first became survives inside it, as the operator picker:
   a button plus a `role="listbox"` popup rather than a native `<select>`, whose
   OS-drawn popup cannot carry the system's flat, square styling.
+- **"Reset order" is gone, and the flow block's "Show" selector has its toolbar
+  slot.** One button that restored the `columns` prop *and* cleared the sort was
+  two undos wearing one label, and both are a keystroke away without it:
+  `Alt`+arrows on a column grip move a column, and a third press on a sorted
+  header clears the sort. What took the slot is the control that says what a
+  cell selection reads as — the only other thing in the toolbar that the block
+  beside it speaks for. Nothing restores the initial column order any more.
+- **The sum panel reads more than sums.** It began as one question — "what do
+  these add up to" — and the answer to that is `null` for a column of statuses.
+  Rather than a metric picker the selection has to be matched to, the toolbar
+  holds a preference per kind of cell content and the rectangle decides which
+  one answers. See **The flow block**.
 - **`favouriteSeason` replaces `email` as the fifth column.** Two enum columns
   are what make a two-chip AND worth demonstrating. `email` keeps its place on
   the record, moves into the detail pane, and is still searched.
