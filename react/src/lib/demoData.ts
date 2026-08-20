@@ -4,7 +4,7 @@
  *
  * Swap in the real API and keep the derive order in `DataTable`.
  */
-import type { DataTableRecord, RecordStatus } from './types'
+import type { DataTableRecord, RecordStatus, Season } from './types'
 
 const NAMES = [
   'Ethan Noah', 'Amelia Hart', 'Marcus Reed', 'Priya Anand', 'Sofia Lindqvist',
@@ -19,6 +19,20 @@ const STATUS: RecordStatus[] = [
   'Success', 'In progress', 'Success',
 ]
 
+/**
+ * PORT ADDITION: written out per record rather than derived from the index, the
+ * same way STATUS is, so the overlap with STATUS is reviewable by eye. Two enum
+ * chips in the dock only demonstrate an AND if the pairs actually overlap:
+ * Success+Spring lands three records (Ethan Noah, Naomi Castillo, Victor Ilyin)
+ * and In progress+Summer another three, so combining two chips narrows the set
+ * instead of emptying it.
+ */
+const SEASON: Season[] = [
+  'Spring', 'Summer', 'Autumn', 'Winter', 'Spring', 'Summer', 'Winter',
+  'Autumn', 'Spring', 'Summer', 'Autumn', 'Spring', 'Winter',
+  'Spring', 'Summer', 'Winter',
+]
+
 const CITIES = [
   '132 My Street, Kingston, New York 12401',
   '41 Halsey Row, Newark, New Jersey 07102',
@@ -28,6 +42,11 @@ const CITIES = [
   '903 Mesa Drive, Austin, Texas 78701',
   '55 Kilburn Place, Chicago, Illinois 60614',
   '19 Ashfield Way, Portland, Oregon 97205',
+]
+
+/** Spread wide enough that a sum over a few rows is worth reading. */
+const SOLVED = [
+  42, 7, 213, 96, 18, 154, 3, 77, 261, 31, 108, 65, 12, 189, 54, 23,
 ]
 
 const PLANS = ['Standard', 'Professional', 'Exclusive', 'Free']
@@ -48,9 +67,10 @@ export function createDemoRecords(): DataTableRecord[] {
     name: 'Tunc Yanik',
     date: '19 August, 2026',
     status: 'Success',
-    mobile: '+1 111 111 1111',
-    email: 'tyanik@yopmail.com',
+    solvedCases: '128',
+    favouriteSeason: 'Summer',
     address: '456 Boss Street, Yenimahalle, Eskisehir 15305',
+    email: 'tyanik@yopmail.com',
     owner: 'Amelia Hart',
     activity: '2 hours ago',
     plan: 'Exclusive',
@@ -63,9 +83,10 @@ export function createDemoRecords(): DataTableRecord[] {
       name,
       date: DATES[i % 4],
       status: STATUS[i],
-      mobile: '+1 ' + (200 + i) + ' 0' + (40 + i) + ' ' + (1000 + i * 37),
-      email: slug(name) + '@xyz.com',
+      solvedCases: String(SOLVED[i]),
+      favouriteSeason: SEASON[i],
       address: CITIES[i % CITIES.length],
+      email: slug(name) + '@xyz.com',
       owner: NAMES[(i + 5) % NAMES.length],
       activity: ACTIVITY[i % 4],
       plan: PLANS[i % PLANS.length],

@@ -9,19 +9,30 @@ import type { CSSProperties, ReactNode } from 'react'
 export type RecordStatus = 'Success' | 'In progress' | 'Failed'
 
 /** The six reorderable data columns. The grip, select and action columns are fixed. */
-export type ColumnKey = 'name' | 'date' | 'status' | 'mobile' | 'email' | 'address'
+export type ColumnKey = 'name' | 'date' | 'status' | 'solvedCases' | 'favouriteSeason' | 'address'
 
-export type StatusFilter = 'All' | RecordStatus
+/**
+ * PORT ADDITION: a second enum column beside `status`. It exists so the filter
+ * dock has two enum chips to combine — one enum column cannot demonstrate an AND.
+ */
+export type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter'
+
+export const SEASONS: Season[] = ['Spring', 'Summer', 'Autumn', 'Winter']
 
 export interface DataTableRecord {
   id: string
   name: string
   date: string
   status: RecordStatus
-  mobile: string
-  email: string
+  /** Held as a string like every other field; the sum readout parses it. */
+  solvedCases: string
+  favouriteSeason: Season
   address: string
-  /** Detail-pane fields. */
+  /**
+   * Detail-pane fields. `email` used to be a column; it moved down here when
+   * `favouriteSeason` took its slot, but the toolbar search still reads it.
+   */
+  email: string
   owner: string
   activity: string
   plan: string
@@ -31,7 +42,7 @@ export interface DataTableRecord {
 /** The unsaved new record pinned above the page rows. It has no id yet. */
 export type DraftRecord = Pick<
   DataTableRecord,
-  'name' | 'date' | 'status' | 'mobile' | 'email' | 'address'
+  'name' | 'date' | 'status' | 'solvedCases' | 'favouriteSeason' | 'address'
 >
 
 export type SortState = { key: ColumnKey; dir: 'asc' | 'desc' } | null
@@ -51,7 +62,7 @@ export interface DataTableProps {
   /** Called with the next list whenever a record is added, edited, deleted or reordered. */
   onRecordsChange?: (next: DataTableRecord[]) => void
 
-  /** Initial column order. Defaults to name, date, status, mobile, email, address. */
+  /** Initial column order. Defaults to name, date, status, solvedCases, favouriteSeason, address. */
   columns?: ColumnKey[]
 
   /** Drives the header bar, primary button, active filter/page, selection rules. */
@@ -96,8 +107,8 @@ export const DEFAULT_COLUMNS: ColumnKey[] = [
   'name',
   'date',
   'status',
-  'mobile',
-  'email',
+  'solvedCases',
+  'favouriteSeason',
   'address',
 ]
 
@@ -105,8 +116,8 @@ export const COLUMN_LABELS: Record<ColumnKey, string> = {
   name: 'Name',
   date: 'Date',
   status: 'Status',
-  mobile: 'Mobile no',
-  email: 'Email ID',
+  solvedCases: 'Solved cases',
+  favouriteSeason: 'Favourite season',
   address: 'Address',
 }
 
@@ -114,12 +125,12 @@ export const COLUMN_WIDTHS: Record<ColumnKey, string> = {
   name: '200px',
   date: '140px',
   status: '140px',
-  mobile: '170px',
-  email: '210px',
+  solvedCases: '150px',
+  // Wider than the longest season by some margin: the cell is uppercased value
+  // text at .12em tracking, and "Favourite season" is the widest header label.
+  favouriteSeason: '170px',
   address: '300px',
 }
-
-export const STATUS_FILTERS: StatusFilter[] = ['All', 'Success', 'In progress', 'Failed']
 
 export const STATUSES: RecordStatus[] = ['Success', 'In progress', 'Failed']
 

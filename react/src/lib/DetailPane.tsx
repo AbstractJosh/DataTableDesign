@@ -111,9 +111,18 @@ export function DetailPane({
         >
           <Pane label="Record ID" value={record.id} />
           <Pane label="Owner" value={record.owner} />
-          <Pane label="Last activity" value={record.activity} />
+          {/* PORT ADDITION: email lost its table column to `favouriteSeason` and
+              lives here now. It sits on row 1 so the short values stay together
+              and the note keeps a full row to itself. */}
+          <Pane label="Email" value={record.email} />
           <Pane label="Plan" value={record.plan} />
-          <div className="dt-pane dt-pane-wide">
+          <Pane label="Last activity" value={record.activity} />
+          {/* Was `dt-pane-wide` (span 4) back when four panes filled row 1 exactly.
+              Email makes five, so the note now shares row 2 with Last activity and
+              spans the 3 remaining columns — a span of 4 would push it to its own
+              row and leave three empty cells showing through the 1px var(--dt-n300)
+              grid gaps as a ragged strip. */}
+          <div className="dt-pane dt-pane-rest">
             <div className="dt-pane-label">Note</div>
             <div className="dt-pane-note">{record.note}</div>
           </div>
