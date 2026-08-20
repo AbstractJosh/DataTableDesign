@@ -1,0 +1,545 @@
+/* =====================================================================
+   DataTable — ported from the prototype's second <style> block
+   (data-table.html, lines 30-425).
+
+   Every colour, px value, weight, letter-spacing, duration and easing is
+   carried over unchanged. The only edits, each marked `PORT:` below, are:
+     (a) every selector is scoped under .dt-root so bare `table` / `th` /
+         `input` / `button` rules cannot leak into a host application;
+     (b) custom properties take a --dt- prefix and are declared on
+         .dt-root instead of :root; class names take a dt- prefix;
+     (c) the keyframes are renamed dt-expand / dt-collapse;
+     (d) the reduced-motion policy is inverted (see the end of the file).
+   ===================================================================== */
+
+/* ---- Modernist tokens (project override: navy accent) ---- */
+/* PORT: on .dt-root rather than :root, so the tokens travel with the
+   component instead of colonising the host document. --dt-accent and
+   --dt-cell-pad-y are overwritten as inline styles on the root element
+   from the accentColor / density props — the same mechanism the
+   prototype used when it set --accent / --cell-pad-y on <html> from JS.
+   The values here are the defaults. */
+.dt-root {
+  --dt-accent: #1d2d46;          /* project override of the system red */
+  --dt-ground: #f3f2f2;
+  --dt-surface: #eae9e9;
+  --dt-ink: #201e1d;
+  --dt-n100: #f8f4f4;
+  --dt-n300: #d7d3d3;
+  --dt-n400: #bab6b6;
+  --dt-n500: #9b9797;
+  --dt-n600: #7d7979;
+  --dt-n700: #605d5d;
+  --dt-danger: #ec3013;          /* destructive / negative only */
+  --dt-success: #2f7d4f;
+  --dt-reversed: #f3f2f2;
+  --dt-cell-pad-y: 15px;         /* comfortable; compact = 9px */
+  /* PORT: the prototype inherited the family from <body>; a portable
+     component has to name it itself. The faces are loaded by
+     ./fonts/fonts.css. */
+  --dt-font: 'Archivo', system-ui, sans-serif;
+
+  /* PORT: the prototype's `body` rule does not come across — min-height
+     and the 40px 48px 64px page padding belong to the host page. What
+     survives is the paint and type it set, plus the prototype's
+     `.shell { max-width: 1400px; margin: 0 auto }`, absorbed here. */
+  background: var(--dt-ground);
+  color: var(--dt-ink);
+  font-family: var(--dt-font);
+  /* PORT: the prototype's `.shell` content column. It is part of the design, so
+     it stays on by default; a host that drops the table into its own panel
+     switches it off with `--dt-max-width: none` rather than fighting the
+     stylesheet's specificity. */
+  max-width: var(--dt-max-width, 1400px);
+  margin: 0 auto;
+}
+
+/* PORT: `* { box-sizing: border-box }` scoped to the subtree. The root
+   itself is listed because a descendant selector would skip it. */
+.dt-root,
+.dt-root *,
+.dt-root *::before,
+.dt-root *::after { box-sizing: border-box; }
+
+/* PORT: `html, body { margin: 0; padding: 0 }` is dropped — resetting the
+   host document is not this component's business. */
+
+.dt-root input, .dt-root button { font-family: inherit; }
+/* PORT: the bare `::selection` is scoped to the subtree; the root itself is
+   listed separately because a descendant combinator would skip it. */
+.dt-root::selection, .dt-root ::selection { background: var(--dt-n300); }
+.dt-root button:focus-visible,
+.dt-root input:focus-visible,
+.dt-root th:focus-visible {
+  outline: 2px solid var(--dt-accent);
+  outline-offset: 2px;
+}
+@keyframes dt-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes dt-expand {
+  from { opacity: 0; max-height: 0; }
+  to   { opacity: 1; max-height: var(--dt-pane-h, 440px); }
+}
+/* --dt-pane-h is the pane's measured height, set by JS on both directions.
+   A fixed 440px spends most of the duration beyond the real height, so
+   the easing curve lands outside what you can see and the motion reads
+   as a snap. */
+@keyframes dt-collapse {
+  from { opacity: 1; max-height: var(--dt-pane-h, 440px); }
+  to   { opacity: 0; max-height: 0; }
+}
+
+/* PORT: `.shell { max-width: 1400px; margin: 0 auto }` is absorbed into
+   .dt-root above — the component is its own content column. */
+
+/* ---- 1. Page header ---- */
+.dt-root .dt-page-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 32px; border-bottom: 2px solid var(--dt-ink); padding-bottom: 18px;
+}
+.dt-root .dt-kicker {
+  font-size: 11px; font-weight: 600; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--dt-n600); margin-bottom: 10px;
+}
+.dt-root .dt-page-head h1 {
+  margin: 0; font-size: 44px; font-weight: 800;
+  letter-spacing: -.025em; line-height: .95;
+}
+.dt-root .dt-stats { display: flex; gap: 40px; padding-bottom: 4px; }
+.dt-root .dt-stat-label {
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600); margin-bottom: 6px;
+}
+.dt-root .dt-stat-value { font-size: 22px; font-weight: 700; line-height: 1; }
+
+/* ---- 2. Toolbar ---- */
+.dt-root .dt-toolbar {
+  display: flex; align-items: stretch; gap: 12px;
+  padding: 18px 0; flex-wrap: wrap;
+}
+.dt-root .dt-search {
+  flex: 1 1 280px; max-width: 380px; min-width: 220px;
+  padding: 11px 13px; border: 2px solid var(--dt-ink); border-radius: 0;
+  background: var(--dt-n100); color: var(--dt-ink);
+  font-size: 13px; font-weight: 500; outline: none;
+}
+/* PORT: the prototype spends a four-position segmented switch on the status
+   filter. This is the same choice as a dropdown — the value sits beside its
+   label in the toolbar's own 2px frame, and the list drops out of the bottom
+   edge of it. The width it gives back is what makes room for the
+   rows-per-page control beside it. */
+.dt-root .dt-filter { position: relative; display: flex; }
+.dt-root .dt-filter-btn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 13px; border: 2px solid var(--dt-ink);
+  background: var(--dt-n100); color: var(--dt-ink);
+  cursor: pointer; text-align: left;
+}
+.dt-root .dt-filter-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600);
+}
+.dt-root .dt-filter-value {
+  font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.dt-root .dt-filter-caret {
+  font-size: 8px; line-height: 1; color: var(--dt-n600);
+  transition: transform 180ms ease;
+}
+.dt-root .dt-filter-btn.dt-open { background: var(--dt-accent); color: var(--dt-reversed); }
+.dt-root .dt-filter-btn.dt-open .dt-filter-tag,
+.dt-root .dt-filter-btn.dt-open .dt-filter-caret { color: rgba(243, 242, 242, .7); }
+.dt-root .dt-filter-btn.dt-open .dt-filter-caret { transform: rotate(180deg); }
+
+.dt-root .dt-filter-list {
+  position: absolute; top: 100%; left: 0; z-index: 20;
+  margin: 0; padding: 0; list-style: none; min-width: 100%;
+  border: 2px solid var(--dt-ink); border-top: none;
+  background: var(--dt-n100);
+  animation: dt-menu-in 140ms ease;
+}
+.dt-root .dt-filter-list li {
+  padding: 10px 13px; white-space: nowrap; cursor: pointer;
+  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-filter-list li:last-child { border-bottom: none; }
+.dt-root .dt-filter-list li:hover,
+.dt-root .dt-filter-list li:focus { background: var(--dt-surface); outline: none; }
+.dt-root .dt-filter-list li.dt-on { background: var(--dt-accent); color: var(--dt-reversed); }
+
+/* PORT ADDITION: page size, which the prototype fixes at 8 in its props. */
+.dt-root .dt-rows {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 13px; border: 2px solid var(--dt-ink); background: var(--dt-n100);
+}
+.dt-root .dt-rows-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600);
+}
+.dt-root .dt-rows-value {
+  font-size: 13px; font-weight: 700; min-width: 17px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Square thumb on a hairline track — the system has no rounded controls, and
+   a native range input is round everywhere by default. */
+.dt-root .dt-rows-range {
+  -webkit-appearance: none; appearance: none;
+  width: 92px; height: 18px; background: transparent; cursor: pointer;
+}
+.dt-root .dt-rows-range::-webkit-slider-runnable-track {
+  height: 2px; background: var(--dt-n400);
+}
+.dt-root .dt-rows-range::-moz-range-track { height: 2px; background: var(--dt-n400); }
+.dt-root .dt-rows-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px; height: 16px; margin-top: -7px;
+  background: var(--dt-accent); border: none; border-radius: 0;
+}
+.dt-root .dt-rows-range::-moz-range-thumb {
+  width: 10px; height: 16px;
+  background: var(--dt-accent); border: none; border-radius: 0;
+}
+.dt-root .dt-spacer { flex: 1; }
+.dt-root .dt-btn-secondary {
+  padding: 11px 16px; border: 2px solid var(--dt-ink); background: transparent;
+  color: var(--dt-ink); font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; cursor: pointer; text-align: left;
+}
+.dt-root .dt-btn-primary {
+  width: 42px; height: 42px; display: inline-flex;
+  align-items: center; justify-content: center;
+  border: 2px solid var(--dt-accent); background: var(--dt-accent);
+  color: var(--dt-reversed); padding: 0; cursor: pointer;
+}
+
+/* ---- 3. Selection actions (in the toolbar) ---- */
+.dt-root .dt-tool-actions { display: flex; gap: 8px; }
+/* the system's disabled step */
+.dt-root .dt-btn-secondary:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---- 4. Table ---- */
+.dt-root .dt-table-scroll { overflow-x: auto; }
+.dt-root table {
+  width: 100%; min-width: 1222px;
+  border-collapse: collapse; table-layout: fixed; font-size: 13px;
+}
+.dt-root th {
+  padding: 12px; text-align: left;
+  font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--dt-reversed); background: var(--dt-accent);
+  border-bottom: 2px solid var(--dt-accent);
+  border-right: 2px solid rgba(243, 242, 242, .35);
+}
+.dt-root th.dt-col-logo   { width: 56px;  padding: 8px 10px; text-align: center; }
+.dt-root th.dt-col-check  { width: 56px;  padding: 12px 8px; text-align: center; }
+.dt-root th.dt-col-action { width: 130px; padding: 12px 16px 12px 12px; border-right: none; }
+.dt-root th.dt-col-data { cursor: default; opacity: .92; }
+.dt-root th.dt-col-data.dt-is-sorted { opacity: 1; }
+.dt-root .dt-th-inner { display: flex; align-items: center; gap: 7px; user-select: none; }
+.dt-root .dt-grip {
+  cursor: grab; font-size: 13px; line-height: 1; letter-spacing: -2px;
+  color: rgba(243, 242, 242, .55);
+  /* PORT ADDITION: the grip is now the only thing that starts a column drag,
+     so it needs a hit area bigger than the glyph. The padding is cancelled by
+     an equal negative margin, so the header keeps its exact height. */
+  padding: 7px 4px; margin: -7px -4px;
+}
+/* `font: inherit` does not carry letter-spacing or text-transform, so the
+   button would otherwise drop the header's tracking and caps. */
+.dt-root .dt-th-sort {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 0; border: none; background: transparent;
+  color: inherit; font: inherit;
+  letter-spacing: inherit; text-transform: inherit;
+  cursor: pointer;
+}
+.dt-root .dt-th-label { white-space: nowrap; }
+.dt-root .dt-grip:active, .dt-root .dt-row-grip:active { cursor: grabbing; }
+/* the element under the cursor, hollowed out while it is being moved */
+.dt-root tbody.dt-dragging > tr > td { opacity: .4; }
+.dt-root th.dt-col-data.dt-dragging { opacity: .5; }
+.dt-root .dt-caret {
+  font-size: 8px; line-height: 1; display: inline-block;
+  color: rgba(243, 242, 242, .45);
+  transition: transform 180ms ease, color 180ms ease;
+}
+.dt-root .dt-is-sorted .dt-caret { color: var(--dt-reversed); }
+/* PORT: `asc` was not in the agreed prefix list but follows the same rule
+   as every other state class — the caret's ascending modifier is
+   `.dt-asc`. */
+.dt-root .dt-caret.dt-asc { transform: rotate(180deg); }
+.dt-root .dt-logo { height: 32px; width: auto; display: block; margin: 0 auto; }
+
+.dt-root .dt-check-box {
+  width: 22px; height: 22px; display: inline-flex;
+  align-items: center; justify-content: center;
+  border: 2.5px solid var(--dt-n500); background: transparent;
+  padding: 0; color: var(--dt-accent); cursor: pointer;
+}
+.dt-root .dt-check-box.dt-on { border-color: var(--dt-accent); }
+.dt-root th .dt-check-box { border-color: rgba(243, 242, 242, .8); color: var(--dt-reversed); }
+
+/* The 3px row-selected marker is drawn as an inset shadow rather than a
+   `border-left` on the tr: under border-collapse a row border half-overflows
+   the table box and forces a permanent horizontal scrollbar. Same 3px rule,
+   no layout contribution. */
+.dt-root tbody tr.dt-selected { background: var(--dt-surface); }
+.dt-root tbody tr.dt-selected > td:first-child { box-shadow: inset 3px 0 0 var(--dt-accent); }
+.dt-root tbody.dt-zebra-odd > tr:first-child:not(.dt-selected) { background: var(--dt-n100); }
+.dt-root tbody.dt-picking > tr:first-child:not(.dt-selected) {
+  background: color-mix(in srgb, var(--dt-accent) 6%, var(--dt-ground));
+}
+.dt-root tbody.dt-confirming > tr:first-child {
+  background: color-mix(in srgb, var(--dt-danger) 8%, var(--dt-ground));
+}
+.dt-root tbody.dt-draft > tr { background: color-mix(in srgb, var(--dt-accent) 6%, var(--dt-ground)); }
+.dt-root td {
+  padding: var(--dt-cell-pad-y) 12px;
+  border-bottom: 1px solid var(--dt-n300);
+  vertical-align: middle;
+}
+.dt-root tbody.dt-expanded > tr:first-child > td { border-bottom: none; }
+.dt-root td.dt-cell-grip   { padding: var(--dt-cell-pad-y) 10px; text-align: center; }
+.dt-root td.dt-cell-check  { padding: var(--dt-cell-pad-y) 8px;  text-align: center; }
+.dt-root td.dt-cell-action { padding: var(--dt-cell-pad-y) 16px var(--dt-cell-pad-y) 12px; }
+/* PORT ADDITION: as with the column grip — vertical padding on an inline box
+   never grows the line, and the horizontal padding is cancelled by the margin,
+   so the row keeps its height and the handle covers most of the grip cell. */
+.dt-root .dt-row-grip {
+  cursor: grab; font-size: 14px; line-height: 1; letter-spacing: -2px; color: var(--dt-n400);
+  padding: 9px 11px; margin: 0 -11px;
+}
+
+.dt-root .dt-name-cell { display: flex; align-items: center; gap: 9px; }
+.dt-root .dt-chevron {
+  width: 18px; height: 18px; flex: 0 0 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--dt-ink);
+  padding: 0; cursor: pointer;
+}
+.dt-root .dt-chevron svg { display: block; transition: transform 180ms ease; }
+.dt-root .dt-chevron.dt-open { color: var(--dt-accent); }
+.dt-root .dt-chevron.dt-open svg { transform: rotate(180deg); }
+.dt-root .dt-name-text { font-weight: 700; }
+.dt-root .dt-cell-text { font-weight: 500; font-variant-numeric: tabular-nums; }
+.dt-root .dt-cell-text.dt-muted { color: var(--dt-n700); }
+.dt-root .dt-pill {
+  display: inline-block; padding: 4px 9px; border: 2px solid;
+  font-size: 10px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.dt-root .dt-pill.dt-success  { color: var(--dt-success); border-color: var(--dt-success); }
+.dt-root .dt-pill.dt-progress { color: var(--dt-n700);    border-color: var(--dt-n500); }
+.dt-root .dt-pill.dt-failed   { color: var(--dt-danger);  border-color: var(--dt-danger); }
+
+.dt-root .dt-row-actions { display: flex; gap: 8px; }
+.dt-root .dt-icon-btn {
+  width: 30px; height: 30px; display: inline-flex;
+  align-items: center; justify-content: center;
+  border: 2px solid; background: transparent; padding: 0; cursor: pointer;
+}
+.dt-root .dt-icon-btn.dt-edit { color: var(--dt-accent); border-color: var(--dt-accent); }
+.dt-root .dt-icon-btn.dt-edit.dt-armed { background: var(--dt-accent); color: var(--dt-reversed); }
+.dt-root .dt-icon-btn.dt-del  { color: var(--dt-danger); border-color: var(--dt-danger); }
+/* delete confirmation, in place of the two action buttons */
+.dt-root .dt-icon-btn.dt-confirm { background: var(--dt-danger); border-color: var(--dt-danger); color: var(--dt-reversed); }
+.dt-root .dt-icon-btn.dt-cancel  { color: var(--dt-ink); border-color: var(--dt-ink); }
+/* the draft row's save reuses the confirm shape in accent, not red:
+   red is this system's destructive-only signal */
+.dt-root .dt-icon-btn.dt-save { background: var(--dt-accent); border-color: var(--dt-accent); color: var(--dt-reversed); }
+
+/* ---- inline edit: pick a field, then edit it ---- */
+.dt-root .dt-pick {
+  display: inline-block; font: inherit; color: inherit; text-align: left;
+  background: transparent; border: none; padding: 3px 5px; margin: -3px -5px;
+  cursor: pointer;
+  outline: 2px dashed color-mix(in srgb, var(--dt-accent) 45%, transparent);
+  outline-offset: 0;
+}
+.dt-root .dt-pick:hover, .dt-root .dt-pick:focus-visible {
+  outline: 2px solid var(--dt-accent);
+  background: color-mix(in srgb, var(--dt-accent) 10%, transparent);
+}
+.dt-root .dt-cell-input, .dt-root .dt-draft-input {
+  width: 100%; padding: 5px 7px;
+  border: 2px solid var(--dt-accent); border-radius: 0;
+  background: var(--dt-n100); color: var(--dt-ink);
+  font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.dt-root .dt-draft-input::placeholder { color: var(--dt-n500); font-weight: 500; }
+.dt-root .dt-draft-input.dt-invalid { border-color: var(--dt-danger); }
+.dt-root .dt-status-pick {
+  display: inline-flex; flex-direction: column;
+  border: 2px solid var(--dt-accent); background: var(--dt-n100);
+}
+.dt-root .dt-status-pick button {
+  padding: 5px 8px; border: none; border-bottom: 2px solid var(--dt-accent);
+  background: transparent; color: var(--dt-ink); text-align: left;
+  font-size: 9px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; cursor: pointer;
+}
+.dt-root .dt-status-pick button:last-child { border-bottom: none; }
+.dt-root .dt-status-pick button.dt-on { background: var(--dt-accent); color: var(--dt-reversed); }
+
+/* detail row */
+.dt-root td.dt-detail-cell {
+  padding: 0 12px 18px 46px;
+  background: var(--dt-surface);
+  border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-detail-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+  background: var(--dt-n300); border: 1px solid var(--dt-n300);
+  overflow: hidden;
+}
+/* Applied only on the render that opens the row, so unrelated repaints
+   do not replay the animation. */
+.dt-root .dt-detail-grid.dt-entering { animation: dt-expand 200ms ease-in-out; }
+/* `forwards` holds the pane collapsed until animationend unmounts it,
+   so there is no flash of full height on the last frame. */
+.dt-root .dt-detail-grid.dt-collapsing { animation: dt-collapse 180ms ease-in-out forwards; }
+.dt-root .dt-pane { background: var(--dt-n100); padding: 16px 18px; }
+.dt-root .dt-pane-wide { grid-column: span 4; }
+.dt-root .dt-pane-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--dt-n600); margin-bottom: 8px;
+}
+.dt-root .dt-pane-value { font-size: 14px; font-weight: 600; }
+.dt-root .dt-pane-note { font-size: 14px; line-height: 1.5; max-width: 70ch; text-wrap: pretty; }
+
+/* empty state */
+.dt-root .dt-empty { padding: 56px 0; border-bottom: 2px solid var(--dt-ink); text-align: left; }
+.dt-root .dt-empty-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+.dt-root .dt-empty-body { font-size: 13px; color: var(--dt-n700); }
+
+/* ---- 5. Footer ---- */
+.dt-root .dt-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; padding: 18px 0 0; border-top: 2px solid var(--dt-ink); flex-wrap: wrap;
+}
+.dt-root .dt-foot-count { font-size: 12px; font-weight: 500; color: var(--dt-n700); }
+.dt-root .dt-foot-count strong { color: var(--dt-ink); font-weight: 700; }
+.dt-root .dt-pager { display: flex; gap: 6px; align-items: center; }
+.dt-root .dt-pager-nav {
+  height: 34px; padding: 0 12px; border: 2px solid var(--dt-n400);
+  background: transparent; color: var(--dt-n700);
+  font-size: 11px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; cursor: pointer;
+}
+.dt-root .dt-pager-num {
+  min-width: 34px; height: 34px; padding: 0 8px;
+  border: 2px solid var(--dt-n400); background: transparent; color: var(--dt-ink);
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.dt-root .dt-pager-num.dt-active {
+  background: var(--dt-accent); border-color: var(--dt-accent); color: var(--dt-reversed);
+}
+
+.dt-root [hidden] { display: none !important; }
+
+/* PORT ADDITIONS — not in the prototype.
+
+   The grips are the only drag affordances, and the prototype gives them no
+   keyboard route at all — nor does it restrict the drag to them: the whole
+   <tr> and <th> were draggable there. Here the grip carries `draggable`
+   itself, so the cell body is free for the range selection below. They stay
+   <span>s rather than <button>s (a draggable <button> is inconsistent across
+   browsers) but become focusable, so Alt+Arrow can reorder rows and columns. */
+.dt-root [role="button"]:focus-visible {
+  outline: 2px solid var(--dt-accent);
+  outline-offset: 2px;
+}
+.dt-root th [role="button"]:focus-visible {
+  outline-color: var(--dt-reversed);
+}
+
+/* The live region that announces a keyboard reorder. */
+.dt-root .dt-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Cell range (PORT ADDITION) --------------------------------------
+   An Excel-style rectangle over the cells: drag, Shift+click or Shift+arrow to
+   size it, Ctrl/Cmd+C to copy it. It is drawn with the accent — a 12% wash and
+   a 2px edge, the system's structural border weight — and, like Excel, the
+   cell the keyboard is standing on is left unfilled.
+
+   The edges are inset shadows rather than borders: under `border-collapse` a
+   real border on a cell displaces the grid it shares with its neighbours. Each
+   side is a custom property so the four edge classes can combine without
+   sixteen rules for the corner cases. */
+.dt-root.dt-cell-select td[data-row] { cursor: cell; }
+/* only while a drag is in flight — otherwise text in the cells stays selectable */
+.dt-root.dt-selecting { user-select: none; -webkit-user-select: none; }
+
+.dt-root td[data-row]:focus { outline: none; }
+.dt-root td[data-row]:focus-visible {
+  outline: 2px solid var(--dt-accent);
+  outline-offset: -2px;
+}
+
+.dt-root td.dt-range {
+  --dt-edge-t: transparent; --dt-edge-r: transparent;
+  --dt-edge-b: transparent; --dt-edge-l: transparent;
+  background: color-mix(in srgb, var(--dt-accent) 12%, var(--dt-ground));
+  box-shadow:
+    inset 0 2px 0 0 var(--dt-edge-t),
+    inset -2px 0 0 0 var(--dt-edge-r),
+    inset 0 -2px 0 0 var(--dt-edge-b),
+    inset 2px 0 0 0 var(--dt-edge-l);
+}
+.dt-root td.dt-range-t { --dt-edge-t: var(--dt-accent); }
+.dt-root td.dt-range-r { --dt-edge-r: var(--dt-accent); }
+.dt-root td.dt-range-b { --dt-edge-b: var(--dt-accent); }
+.dt-root td.dt-range-l { --dt-edge-l: var(--dt-accent); }
+/* the anchor keeps whatever the row is painted with — zebra, selected, armed */
+.dt-root td.dt-range.dt-range-active { background: transparent; }
+
+/* Must come last: these override the `animation` / `transition` shorthands
+   above at equal specificity, so source order decides. Animations are
+   shortened rather than disabled — the collapsing pane is unmounted by its
+   own animationend, which `animation: none` would never fire. */
+/* PORT: the prototype animates by default even where the OS asks for
+   reduced motion, because demonstrating the motion was the point of it,
+   and it only defers to the OS with ?motion=auto. The component inverts
+   that, as the prototype's own note asked for: the OS preference is
+   honoured by default, `motion="always"` opts back into the animation,
+   and `motion="never"` shortens everything unconditionally.
+
+   Two differences from the source beyond the inversion:
+     - the gate is the component root ([data-dt-motion]) and not <html>,
+       because a portable component must not depend on a document-level
+       attribute;
+     - .dt-flipping — the class useFlip puts on the elements it is
+       animating — joins the set. useFlip must therefore drive its
+       transition from a stylesheet rule or consult the motion flag in
+       JS; an inline `transition` on the element would outrank these. */
+.dt-root[data-dt-motion="never"] .dt-detail-grid.dt-entering,
+.dt-root[data-dt-motion="never"] .dt-detail-grid.dt-collapsing { animation-duration: 1ms; }
+.dt-root[data-dt-motion="never"] .dt-chevron svg,
+.dt-root[data-dt-motion="never"] .dt-caret,
+.dt-root[data-dt-motion="never"] .dt-filter-caret,
+.dt-root[data-dt-motion="never"] .dt-filter-list,
+.dt-root[data-dt-motion="never"] .dt-flipping { transition-duration: 1ms; animation-duration: 1ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dt-root:not([data-dt-motion="always"]) .dt-detail-grid.dt-entering,
+  .dt-root:not([data-dt-motion="always"]) .dt-detail-grid.dt-collapsing { animation-duration: 1ms; }
+  .dt-root:not([data-dt-motion="always"]) .dt-chevron svg,
+  .dt-root:not([data-dt-motion="always"]) .dt-caret,
+  .dt-root:not([data-dt-motion="always"]) .dt-filter-caret,
+  .dt-root:not([data-dt-motion="always"]) .dt-filter-list,
+  .dt-root:not([data-dt-motion="always"]) .dt-flipping { transition-duration: 1ms; animation-duration: 1ms; }
+}

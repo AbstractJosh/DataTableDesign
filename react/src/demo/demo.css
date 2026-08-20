@@ -1,0 +1,106 @@
+/* ---------------------------------------------------------------------------
+   The PAGE frame.
+
+   data-table.html puts these on <body>; a portable component cannot own them,
+   so the host page does. Anything scoped to .dt-root belongs in
+   src/lib/DataTable.css instead — nothing in this file may style the component.
+   --------------------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  min-height: 100vh;
+  background: #f3f2f2;                              /* --ground */
+  color: #201e1d;                                   /* --ink    */
+  font-family: 'Archivo', system-ui, sans-serif;
+  padding: 40px 48px 64px;
+}
+
+::selection { background: #d7d3d3; }                /* --n300 */
+
+/* ---------------------------------------------------------------------------
+   Dev harness control strip.
+
+   Not part of the design: monospace, dashed, muted, sitting above .dt-root.
+   Kept visually subordinate on purpose — if it ever starts looking designed,
+   make it uglier, not prettier.
+   --------------------------------------------------------------------------- */
+
+.demo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin: 0 0 28px;
+  padding: 9px 12px;
+  border: 1px dashed #bab6b6;                       /* --n400 */
+  background: transparent;
+  color: #7d7979;                                   /* --n600 */
+  font: 500 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.demo-controls__tag {
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  font-size: 10px;
+  color: #9b9797;                                   /* --n500 */
+}
+
+.demo-controls__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.demo-controls code {
+  color: #605d5d;                                   /* --n700 */
+  min-width: 4.5ch;
+}
+
+.demo-controls input,
+.demo-controls select,
+.demo-controls button {
+  font: inherit;
+  color: inherit;
+}
+
+.demo-controls input[type='color'] {
+  width: 28px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #bab6b6;
+  background: none;
+  cursor: pointer;
+}
+
+.demo-controls input[type='range'] { width: 96px; }
+
+.demo-controls select {
+  border: 1px solid #bab6b6;
+  background: transparent;
+  padding: 1px 2px;
+  cursor: pointer;
+}
+
+.demo-controls__reset {
+  margin-left: auto;
+  border: 1px dashed #bab6b6;
+  background: transparent;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.demo-controls__reset:hover { color: #201e1d; }
+
+/* Shown when the current motion setting means nothing can animate — the single
+   most confusing state this harness can be in. */
+.demo-controls__warn {
+  font: 11px/1.4 ui-monospace, monospace;
+  color: #8a3b00;
+  background: #ffe9d6;
+  border: 1px solid #e0b48a;
+  padding: 3px 7px;
+}

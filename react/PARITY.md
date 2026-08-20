@@ -1,0 +1,374 @@
+# PARITY.md — behavioural inventory of the prototype
+
+Source of truth: `../data-table.html` (the vanilla-JS prototype). Never modify it.
+Secondary: `../design_handoff_data_table/README.md` (the written design spec) for token values.
+
+Every item below is an **observable behaviour of the prototype** that the React port in
+`react/src/lib/` must reproduce, unless it appears in
+[Known deviations the port SHOULD make](#known-deviations-the-port-should-make).
+
+How to use this file: tick an item only after you have exercised it in the running React demo,
+not after reading the code. `(source: ...)` points at the prototype line(s) that define the
+behaviour. `React note:` flags where the mechanism must change.
+
+Where the prototype and the handoff README disagree, **the prototype wins** — see
+[Prototype vs. README](#prototype-vs-readme) at the end.
+
+---
+
+## 1. State & derive order
+
+- [ ] **S-01 State shape** — a single object with exactly: `data`, `cols`, `selected`, `expanded`, `sort`, `query`, `filter`, `page`, `picking`, `editing`, `confirmRow`, `draft`. `selected`/`expanded` are id-keyed maps; `sort` is `{key,dir}|null`; `picking`/`confirmRow` are record ids; `editing` is `{id,key}`; `page` is 0-indexed. (source: data-table.html:526-539) React note: one `useReducer` is a better fit than 12 `useState`s, because most interactions write three or four of these fields atomically.
+- [ ] **S-02 `dragRow` / `dragCol` are refs, not state** — held outside the state object precisely so a drag never re-renders on its own; they are read during render (to paint the `dragging` class) but written without a render. (source: data-table.html:547-548, 958, 1067) React note: `useRef`. Because a ref write does not re-render, the `dragging` class must be applied imperatively at `dragstart` (see R-04) exactly as the prototype does, or a render must be forced.
+- [ ] **S-03 Animation bookkeeping lives outside state** — `collapsing: Set`, `collapseTimers`, `collapseHeights`, `entering: Set`, `enterTimers`. (source: data-table.html:552-558) React note: refs plus one forced re-render when a set changes; under StrictMode every timer must be cleared on unmount or the double-invoked effects double-fire the 400 ms fallbacks.
+- [ ] **S-04 Derive order is fixed** — filter (status first, then query) → sort → paginate → slice. Nothing re-orders these stages. (source: data-table.html:1010-1046) React note: one `useMemo` chain; keep the stages separate so `filtered.length` (Matching stat, footer total) is available before pagination.
+- [ ] **S-05 Sorting never mutates `state.data`** — `filtered.slice().sort(...)`; the underlying record order is only changed by row drag and by a draft save. (source: data-table.html:1024) React note: identical, but do not sort a memoised array in place.
+- [ ] **S-06 Page is clamped during derive and written back** — `page = Math.min(state.page, pageCount-1)` and `state.page = page`. A shrinking result set silently pulls the current page down. (source: data-table.html:1038-1040) React note: clamping during render and writing back to state is a render-phase side effect in React; clamp for display and reconcile in an effect, or clamp inside the reducer on every action.
+- [ ] **S-07 Selection and expansion are keyed by record id and survive paging, filtering, searching, sorting and reordering** — nothing prunes them except a delete. A row scrolled off by a filter comes back still selected and still expanded. (source: data-table.html:1177, 1180-1184, 1292-1300) React note: keep them as `Record<string,boolean>` / `Set<string>` in state, never derive from the visible slice.
+- [ ] **S-08 Records are mutated in place by inline editing** — `rec[key] = value` on the object inside `state.data`; `makeData()` is rebuilt fresh on each call precisely so edits do not leak across a reset. (source: data-table.html:489-491, 1285) React note: must become immutable updates (`records.map(r => r.id === id ? {...r, [key]: value} : r)`) or nothing re-renders. This is also the seam for the controlled `records` / `onRecordsChange` props.
+- [ ] **S-09 Only three things change record order** — row drag (splice), draft save (`unshift`, so a new record lands at the top of `state.data`), delete (filter out). (source: data-table.html:714-724, 927-940, 1351-1369) React note: same, immutably.
+- [ ] **S-10 The draft is not in `state.data`** — so it is invisible to filter, search, sort, the Total stat, the Matching stat, the footer total and the page count. (source: data-table.html:843-847, 1088-1092) React note: render it as a separate `<tbody>` before the mapped rows; never merge it into the records array.
+- [ ] **S-11 `render()` always begins with `syncDraft()`** — uncontrolled draft inputs are read back into state before anything repaints, so typing is never lost to an unrelated re-render. (source: data-table.html:1034, 863-868) React note: if the draft inputs become controlled, this whole mechanism disappears; if they stay uncontrolled, you need the same read-back before every commit.
+- [ ] **S-12 The four config props are applied at boot** — `accentColor` → `--accent` on the root, `density` → `--cell-pad-y` (`15px` comfortable / `9px` compact), `rowsPerPage`, `zebraRows`. (source: data-table.html:462-473) React note: set `--accent` and `--cell-pad-y` as inline custom properties on `.dt-root` (not `documentElement`), so two instances with different accents can coexist.
+- [ ] **S-13 No persistence** — nothing is written to storage or the URL; a reload restores the seed data, default column order, page 0, filter "All". (source: whole file) React note: same; `defaultRecords` is a mount-time seed only.
+
+## 2. Search & filter
+
+- [ ] **F-01 Search filters on every keystroke** — substring, case-insensitive, over `name + " " + email + " " + address + " " + mobile`; sets `page = 0`; calls `clearEditing()`. (source: data-table.html:1424-1429, 1017) React note: controlled input; do not debounce (the prototype does not, and a debounce changes the feel).
+- [ ] **F-02 The raw query is stored, trimmed at derive time** — `state.query` keeps the user's spaces; `derive()` does `.trim().toLowerCase()`. A query of only spaces therefore matches everything. (source: data-table.html:1011)
+- [ ] **F-03 Only four fields are searched** — name, email, address, mobile, joined with single spaces so a query can straddle a field boundary (e.g. `"hart amelia"` does not match, but `"hart amelia.hart"` does). `date`, `status`, `id`, `owner`, `activity`, `plan` and `note` are never searched. (source: data-table.html:1017)
+- [ ] **F-04 Empty query short-circuits** — `if (!q) return true` before the string build. (source: data-table.html:1016)
+- [ ] **F-05 Status filter is an exact equality test; "All" disables it.** (source: data-table.html:1015)
+- [ ] **F-06 Filter and query compose with AND** — status is applied first, then the query, inside the same predicate. (source: data-table.html:1013-1018)
+- [ ] **F-07 Filter options are exactly `All`, `Success`, `In progress`, `Failed`, in that order.** (source: data-table.html:520)
+- [ ] **F-08 Clicking a filter sets the filter, resets `page = 0`, calls `clearEditing()`, renders.** (source: data-table.html:604-610) React note: same handler shape as search; both must go through the same "reshuffle" reducer branch. The control the click lands on is a dropdown option rather than a segment (DEV-12); everything the click *does* is unchanged.
+- [ ] **F-09 Filtering does not clear selection or expansion** — only `picking`, `editing`, `confirmRow` and in-flight pane animations. (source: data-table.html:1292-1300)
+- [ ] **F-10 A filter that empties the page pulls the page index down** on the same render (see S-06), so you never land on a blank page 3.
+
+## 3. Sort
+
+- [ ] **T-01 Sort cycles ascending → descending → unsorted** on repeated clicks of the same column. `state.sort` goes `{key,'asc'}` → `{key,'desc'}` → `null`. (source: data-table.html:1153-1158) React note: pure reducer logic; the trap is writing `desc → asc` instead of `desc → null`.
+- [ ] **T-02 Clicking a different column always restarts at ascending**, regardless of the previous direction. (source: data-table.html:1155-1157)
+- [ ] **T-03 Comparator is `String(a[key]).localeCompare(String(b[key])) * (dir === 'asc' ? 1 : -1)`** — no locale/options argument, no numeric collation. (source: data-table.html:1025-1026)
+- [ ] **T-04 Sorting is lexicographic even for dates and phone numbers** — deliberate; `"02 April, 2026"` sorts before `"19 August, 2026"`. Do not "fix" this in the port. (source: data-table.html:1022-1023, README "Sort")
+- [ ] **T-05 Sort runs on the filtered set, before pagination** — so page 1 shows the global top-8 of the current filter, not a per-page sort. (source: data-table.html:1020-1027)
+- [ ] **T-06 Sort does NOT reset the page** — unlike search and filter, the sort branch returns straight to `render()` with `state.page` untouched. Sorting on page 3 keeps you on page 3. (source: data-table.html:1152-1159)
+- [ ] **T-07 Sort does NOT call `clearEditing()`** — an armed row stays armed and a pending confirm is cleared only by the generic rule in K-04. (source: data-table.html:1147-1159)
+- [ ] **T-08 Row reorder clears the sort** (`state.sort = null` inside `moveRow`) — because a manual order cannot coexist with a sorted view. (source: data-table.html:721)
+- [ ] **T-09 Column reorder does NOT clear the sort** — `moveCol` leaves `state.sort` alone. (source: data-table.html:726-734)
+- [ ] **T-10 "Reset order" clears the sort and restores the default column order.** (source: data-table.html:1433-1438)
+- [ ] **T-11 The sort hit area is the label AND the caret** — both live inside one `.th-sort` button; the grip is a separate span and is not a sort target. (source: data-table.html:750-757)
+- [ ] **T-12 Sorted-column affordances** — the `th` gets `is-sorted` (opacity `.92` → `1`), the caret goes from `rgba(243,242,242,.45)` to `#f3f2f2`, and rotates 180° for ascending, with `transition: transform 180ms ease, color 180ms ease`. (source: data-table.html:157-159, 186-192, 1063-1073)
+- [ ] **T-13 `aria-sort` on every data `th`** — `ascending` / `descending` / `none`. (source: data-table.html:1068-1070)
+
+## 4. Selection
+
+- [ ] **L-01 Row checkbox toggles `selected[id]`** — it writes `false`, it does not delete the key. (source: data-table.html:1177) React note: irrelevant if you count truthy values (L-02); relevant if you ever do `Object.keys(selected)`.
+- [ ] **L-02 The Selected stat counts truthy values across the whole data set**, not just the visible page. (source: data-table.html:1046, 1050)
+- [ ] **L-03 The header box toggles ONLY the rows on the current page** — it re-derives, slices `[page*perPage, +perPage]`, and writes every visible row to one value. Rows on other pages are untouched. (source: data-table.html:1161-1168)
+- [ ] **L-04 The header box's new value is `!(visible.length > 0 && visible.every(selected))`** — a partially selected page therefore becomes fully selected on the first click, and empty on the second. (source: data-table.html:1165)
+- [ ] **L-05 The header box renders checked only when there is at least one visible row AND every visible row is selected.** (source: data-table.html:1047, 1077-1079)
+- [ ] **L-06 There is no indeterminate state** — the header box is either empty or shows the 12px check. (source: data-table.html:1078)
+- [ ] **L-07 Selection survives paging, filtering, searching, sorting, row/column reorder, expand and collapse.** (see S-07)
+- [ ] **L-08 Deleting a record clears its selection and expansion.** (source: data-table.html:1360-1361)
+- [ ] **L-09 Selected row visuals** — `background: #eae9e9` on the `tr` plus `box-shadow: inset 3px 0 0 var(--accent)` on the FIRST `td` (deliberately not a `border-left`, which would force a permanent horizontal scrollbar under `border-collapse`). (source: data-table.html:202-207) React note: keep the inset-shadow trick; it is a correctness fix, not a style choice.
+- [ ] **L-10 Selection beats zebra and beats the armed-row tint** (both use `:not(.selected)`), but the delete-confirm tint beats selection (no `:not()`). (source: data-table.html:208-214)
+- [ ] **L-11 Export and Archive are enabled only when at least one row is selected**, and are otherwise `disabled` with `opacity: .45; cursor: not-allowed`. They keep their place in the toolbar either way so the table never shifts. (source: data-table.html:1057-1060, 141)
+- [ ] **L-12 Export and Archive have NO click handlers in the prototype** — they are stubs. (source: data-table.html:1439-1440) React note: the port wires them to the `onExport` / `onArchive` props, called with the selected records; that is an addition, not a parity break.
+- [ ] **L-13 Selecting a row cancels a pending delete confirm** (generic rule, K-04) and, if an editor is open, commits it first (E-12).
+- [ ] **L-14 Selecting does not disarm an armed row** — `picking` is untouched by `select`. (source: data-table.html:1177)
+
+## 5. Pagination
+
+- [ ] **P-01 `rowsPerPage` is 8 by default (documented range 4–16); with 17 seed records that is 3 pages.** (source: data-table.html:467, 1037)
+- [ ] **P-02 `pageCount = Math.max(1, Math.ceil(filtered.length / perPage))`** — always at least one page, even with zero results. (source: data-table.html:1038)
+- [ ] **P-03 Prev is `Math.max(0, page - 1)`; Next is `page + 1` with NO upper clamp at the call site** — the clamp happens in the derive (S-06). Both call `clearEditing()`. (source: data-table.html:1442-1443)
+- [ ] **P-04 Prev is disabled at page 0; Next is disabled at `page >= pageCount - 1`.** (source: data-table.html:1121-1122)
+- [ ] **P-05 Number buttons are rebuilt every render**, labelled 1..pageCount, the active one carries `.active` and `aria-current="page"`. (source: data-table.html:1110-1120) React note: map over `pageCount`; keys are the index.
+- [ ] **P-06 Clicking a number sets the page and calls `clearEditing()`.** (source: data-table.html:1118)
+- [ ] **P-07 Paging does not clear selection, expansion, or the draft** — only `picking` / `editing` / `confirmRow` and in-flight pane animations. (source: data-table.html:1292-1300)
+- [ ] **P-08 Off-page rows are detached from the DOM but their node and caches survive** — `bodyCache` keeps the `<tbody>` so an id that returns to the page reuses the same node. (source: data-table.html:1094-1099, 764-772) React note: React does the equivalent automatically via `key={record.id}`; just make sure the key is the id, not the index, or FLIP and animation state will attach to the wrong row.
+- [ ] **P-09 Search and filter reset to page 0; sort, select, expand and reorder do not.** (source: data-table.html:606, 1426)
+
+## 6. Expand / collapse and its animation
+
+- [ ] **X-01 The chevron toggles `expanded[id]`; any number of rows can be open at once.** (source: data-table.html:1178-1186)
+- [ ] **X-02 The detail row is a second `<tr>` inside the SAME `<tbody>` as the record row** — that is the whole reason each record gets its own tbody. `colspan = cols.length + 3` (grip, check, action). (source: data-table.html:980-1004) React note: one `<tbody key={id}>` per record; do not flatten to a single tbody.
+- [ ] **X-03 The record row's bottom divider is suppressed while the pane is on screen** — `tbody.expanded > tr:first-child > td { border-bottom: none }`, toggled on `expanded || collapsing`, so the divider stays gone for the whole collapse. (source: data-table.html:221, 950, 953)
+- [ ] **X-04 Opening cancels an in-flight collapse first** — `endCollapse(id, false)` (no repaint) then `expanded[id] = true` and `entering.add(id)`. (source: data-table.html:1185-1186)
+- [ ] **X-05 `startEnter` measures the pane's natural height into `--pane-h` and adds `.entering` in the SAME task** — no frame is painted between the measurement and the animation start, so there is no flash of the pane at full height. (source: data-table.html:1221-1231) React note: this MUST be `useLayoutEffect` (or a ref callback), never `useEffect` — `useEffect` runs after paint and you will see the flash.
+- [ ] **X-06 Enter animation is `dtExpand 200ms ease-in-out`, `opacity 0 → 1`, `max-height 0 → var(--pane-h, 440px)`, with `overflow: hidden` on the grid.** The 440px fallback exists only for the unmeasured case; a fixed 440px would spend most of the duration past the real height and read as a snap. (source: data-table.html:64-70, 313, 305-310)
+- [ ] **X-07 A 400 ms fallback timer ends the enter state** if `animationend` never arrives. (source: data-table.html:1229-1230)
+- [ ] **X-08 `animationend` on `.entering` ends the enter state and removes the class WITHOUT a repaint.** (source: data-table.html:1260-1262)
+- [ ] **X-09 Any re-render while a row is still entering re-runs `startEnter`** — re-measuring, restarting the animation and resetting the 400 ms timer. (source: data-table.html:1098) React note: same effect must depend on membership in the entering set, not on every render, or an unrelated state change replays the animation.
+- [ ] **X-10 Closing measures the pane BEFORE the state changes** — `Math.ceil(grid.getBoundingClientRect().height)` into `collapseHeights[id]` (fallback 440), then `delete expanded[id]`, then `endEnter(id)` (cancels an expand still in flight), then `startCollapse(id)`. (source: data-table.html:1179-1185) React note: read the height in the event handler off a ref, before dispatching — after the dispatch the node may already be gone.
+- [ ] **X-11 A collapsing row stays mounted** — `showDetail = expanded || collapsing.has(id)`; the grid renders with `.collapsing` and an inline `style="--pane-h: <measured>px"`. (source: data-table.html:949-950, 989-991)
+- [ ] **X-12 Collapse animation is `dtCollapse 180ms ease-in-out forwards`** — `forwards` holds it at height 0 until `animationend` unmounts it, so there is no flash of full height on the last frame. (source: data-table.html:72-76, 314-316)
+- [ ] **X-13 `animationend` on `.collapsing` calls `endCollapse(id, true)`, which repaints and unmounts the pane.** (source: data-table.html:1254-1259, 1247-1252)
+- [ ] **X-14 A 400 ms fallback timer unmounts the pane** if `animationend` never arrives — e.g. the row was detached mid-flight by a delete or a page change, which would otherwise strand the pane open forever. (source: data-table.html:1239-1245)
+- [ ] **X-15 Re-opening mid-collapse cancels the collapse, and collapsing cancels an in-flight enter** — the two directions are mutually cancelling and neither leaks a timer. (source: data-table.html:1182, 1185, 1233-1237, 1247-1252)
+- [ ] **X-16 `clearEditing()` ends every collapsing pane (no repaint) and every entering pane** — so a row paged away mid-animation does not replay it on return. (source: data-table.html:1297-1299)
+- [ ] **X-17 Deleting a record ends both its collapse and its enter** and clears its timers. (source: data-table.html:1364-1365)
+- [ ] **X-18 The chevron rotates 180° and turns accent when open**, `transition: transform 180ms ease`. (source: data-table.html:230-233)
+- [ ] **X-19 A plain re-render of an already-open row does NOT replay the animation** — `.entering` is only applied on the render that opens it. (source: data-table.html:311-313, 1098)
+- [ ] **X-20 Detail pane content** — four panes (Record ID, Owner, Last activity, Plan) then a full-width (span 4) Note pane; all values HTML-escaped. (source: data-table.html:981-1000) React note: escaping is automatic in JSX.
+
+## 7. Row drag + FLIP
+
+- [ ] **R-01 The whole `<tr>` is draggable, not just the grip** — the grip (`⠿`, U+283F, `cursor: grab` / `grabbing`) is a visual affordance only. (source: data-table.html:964, 969, 225) React note: **superseded by DEV-10** — the port moves `draggable` onto the grip. Everything else in this section still holds.
+- [ ] **R-02 An armed row is NOT draggable** — `draggable={!armed}`; a draggable ancestor hijacks the click-and-drag that selects text inside an open editor. (source: data-table.html:960-964) React note: keep this exactly; it is a real bug fix, not a nicety.
+- [ ] **R-03 `dragstart` binds its own `dragend` on the source node with `{once: true}`** — a row reorder repaints the tbody and destroys the `<tr>` the drag started on; the browser still fires `dragend` at the detached node, but a detached node cannot bubble to the delegated listener, so without this the row stays hollowed out at 40% forever. (source: data-table.html:1378-1388) React note: React re-creates the `<tr>` too. Attach the cleanup imperatively to `e.currentTarget` in the `onDragStart` handler, or make `endDrag` idempotent and also drive it from `onDragEnd` on the (new) row plus a document-level `dragend`.
+- [ ] **R-04 `dragRow` is set and the `dragging` class is added imperatively** — immediately, without waiting for a render. (source: data-table.html:1396-1400) React note: with `dragRow` in a ref there is no render; either add the class via the ref'd node or accept one render on dragstart.
+- [ ] **R-05 `effectAllowed = "move"`.** (source: data-table.html:1389)
+- [ ] **R-06 The dragged row renders hollowed out** — `tbody.dragging > tr > td { opacity: .4 }` (this covers the detail row too). (source: data-table.html:181)
+- [ ] **R-07 The reorder happens on `dragenter`, not on drop** — entering another `tbody[data-id]` splices immediately, so the list reorders live under the cursor. (source: data-table.html:1403-1413)
+- [ ] **R-08 `dragover` calls `preventDefault()` only while a drag is active.** (source: data-table.html:1415-1417)
+- [ ] **R-09 `moveRow` no-ops when source and target are the same id, or when either id is not in `state.data`** — dragging onto the draft tbody (`__draft__`) is therefore a safe no-op. (source: data-table.html:714-718)
+- [ ] **R-10 The splice uses absolute indices in `state.data`** — `splice(to, 0, splice(from,1)[0])`. With a filter active, filtered-out records between the two positions keep their absolute places, so the visible result can look like a bigger jump than the drop position suggests. (source: data-table.html:720)
+- [ ] **R-11 Row reorder clears the sort.** (source: data-table.html:721; see T-08)
+- [ ] **R-12 FLIP: snapshot → mutate → render → play** — `snapshotRows()` records `getBoundingClientRect().top` for every connected tbody BEFORE the splice; `flipRows()` reads the new tops after render and plays the difference. (source: data-table.html:655-661, 688-696, 719-723) React note: `useLayoutEffect` after the reorder commit; snapshot into a ref inside the event handler, before dispatch.
+- [ ] **R-13 `play()` details** — drops any pair whose |delta| ≤ 0.5px; sets `transition: none` + `translateY(delta)`; forces a reflow with `void table.offsetHeight`; then in one `requestAnimationFrame` sets `transition: transform 200ms cubic-bezier(.2,.7,.3,1)` and clears the transform. (source: data-table.html:672-686) React note: exactly the same DOM code, just run from a layout effect over ref'd nodes. Keep the forced reflow — without it the browser coalesces both style writes and nothing animates.
+- [ ] **R-14 FLIP is skipped entirely when reduced motion is in effect** — the reorder still happens, instantly. (source: data-table.html:689, 699)
+- [ ] **R-15 `endDrag` clears BOTH refs and strips `.dragging` from every element** — it is bound three ways: the once-handler on the source, a delegated `dragend`, and a delegated `drop`. (source: data-table.html:1372-1376, 1420-1421)
+- [ ] **R-16 There is no `drop` handler that performs the move** — by drop time the array is already in its final order.
+- [ ] **R-17 There is no keyboard path to reorder rows** (see the deviations section).
+
+## 8. Column drag + FLIP
+
+- [ ] **C-01 Each data `th` is `draggable = true`, set once when the node is created.** (source: data-table.html:745) React note: **superseded by DEV-10** — `draggable` sits on the header's grip instead.
+- [ ] **C-02 `dragCol` holds the column key; the `th` gets `.dragging` immediately** (`opacity: .5` — note: `.5` for columns, `.4` for rows). (source: data-table.html:1391-1394, 182)
+- [ ] **C-03 `dragenter` over another data `th` splices the key inside `state.cols` and re-renders live.** (source: data-table.html:1404-1407, 726-734)
+- [ ] **C-04 Columns are checked BEFORE rows in `dragenter`** — `if (dragCol) { ...; return; }`. (source: data-table.html:1404-1408)
+- [ ] **C-05 Column reorder leaves the sort intact** (see T-09) and does not touch selection, expansion, page or the draft.
+- [ ] **C-06 `snapshotCols()` records `getBoundingClientRect().left` per column key** before the splice. (source: data-table.html:663-670)
+- [ ] **C-07 A column FLIP moves the `th` AND every `td[data-key="<key>"]` beneath it**, all with the SAME delta (computed from the `th`), on the X axis. (source: data-table.html:698-712) React note: you need refs to the `th` and a `querySelectorAll` (or a per-cell ref map) inside the root; the delta is per column, not per cell.
+- [ ] **C-08 Same 200 ms `cubic-bezier(.2,.7,.3,1)` curve and the same ≤0.5px threshold as rows.** (source: data-table.html:672-686)
+- [ ] **C-09 Header cells are reordered in place, never rebuilt** — `headRow.insertBefore(th, actionTh)` in `state.cols` order, so the HTML5 drag source survives the render. (source: data-table.html:1062-1075, 741-762) React note: React will re-create/reorder them; the `key` must be the column key so the DOM node is moved rather than re-created, otherwise the in-flight drag dies.
+- [ ] **C-10 Fixed per-column widths** — name 200, date 140, status 140, mobile 170, email 210, address 300 (px), with `table-layout: fixed` and `min-width: 1222px` on the table inside an `overflow-x: auto` wrapper. (source: data-table.html:519, 149-151, 148)
+- [ ] **C-11 The logo, select-all and Action columns are not reorderable and always stay first/first+1/last.** (source: data-table.html:1074, 425-434)
+- [ ] **C-12 "Reset order" restores `["name","date","status","mobile","email","address"]`.** (source: data-table.html:1435)
+
+## 9. Inline editing
+
+- [ ] **E-01 The pencil ARMS the row, it does not open a field** — `picking = (picking === id ? null : id)` and `editing = null`. Clicking the pencil on another row moves the armed state. (source: data-table.html:1196-1199)
+- [ ] **E-02 An armed row turns every data cell into a `.pick` button** — a real `<button>` wrapping the pill / name text / cell text, with a dashed 45% accent outline that goes solid + 10% accent background on hover and focus. (source: data-table.html:792-820, 265-277)
+- [ ] **E-03 The chevron stays OUTSIDE the pick target in the name cell** — expanding still works while armed. (source: data-table.html:806-814)
+- [ ] **E-04 The armed pencil turns filled accent, swaps to the check icon, sets `aria-pressed="true"`, and re-labels to "Done editing".** (source: data-table.html:832-838, 256)
+- [ ] **E-05 The armed row is tinted `color-mix(in srgb, var(--accent) 6%, var(--ground))`, unless it is selected.** (source: data-table.html:209-211)
+- [ ] **E-06 An armed row is not draggable** (see R-02).
+- [ ] **E-07 Clicking a pick target sets `editing = {id, key}`** — exactly one field, globally, at a time. (source: data-table.html:1201-1203)
+- [ ] **E-08 Text fields open an `<input class="cell-input">`** carrying `data-id`/`data-key`, seeded from the record, `aria-label="Edit <Label>"`, 2px accent border, `#f8f4f4` background, tabular numerals. (source: data-table.html:785-790, 279-286) React note: the prototype's input is uncontrolled and read on commit. Keep it uncontrolled (`defaultValue` + ref) to preserve the "value is only read at commit" semantics, or make it controlled and replicate E-11 exactly.
+- [ ] **E-09 Status opens a three-button vertical picker**, not a text input — `Success / In progress / Failed`, current one filled accent, wrapped in `role="group" aria-label="Edit status"`. (source: data-table.html:776-783, 288-299)
+- [ ] **E-10 Picking a status writes it (to the record, or to the draft when the id is `__draft__`) and sets `editing = null`, returning the row to the armed state so another field can follow.** (source: data-table.html:1204-1211)
+- [ ] **E-11 `commitEdit()` trims the input and REFUSES to blank a field** — `if (value) rec[key] = value`, so an emptied input silently discards the edit and the old value stays. It returns `true` whenever an editor was open, so callers know a render is owed. (source: data-table.html:1278-1290) React note: same rule; make sure a whitespace-only value is also discarded (it trims first).
+- [ ] **E-12 mousedown-capture is the primary commit path** — a document-level capture listener that runs BEFORE focus moves: it ignores targets inside `.cell-input, .draft-input, .status-pick`; if the target is a `[data-act]` control inside the table it calls `preventDefault()` and commits WITHOUT rendering, so the click still lands on the intact element and that element's own handler renders; otherwise it commits and renders. Without this, switching straight from one field to another swallows the second click. (source: data-table.html:1302-1320) React note: this is the single most portable-looking, most easily lost behaviour. Implement it as a `mousedown` capture listener on `document` from an effect while `editing` is open — not `onBlur` on the input, which fires too late.
+- [ ] **E-13 `focusout` on the table is the keyboard safety net** — only for `.cell-input`, only when it matches the currently editing `{id,key}`, and only when `input.isConnected` (skips nodes a render just detached). (source: data-table.html:1341-1349) React note: `onBlur` on the input with a guard, or a `focusout` listener on the root.
+- [ ] **E-14 `currentEditor()` matches only `.cell-input[data-id][data-key]`** — the status picker and the draft inputs are deliberately not "the editor". So a `commitEdit()` while a status picker is open just closes the picker. (source: data-table.html:1268-1275)
+- [ ] **E-15 A draft status picker commits to nothing** — `editing.id === "__draft__"` finds no record in `state.data`, so `commitEdit()` only sets `editing = null`. (source: data-table.html:1281-1286)
+- [ ] **E-16 After every render the open editor is refocused and its text re-selected** — `input.focus(); input.select();` guarded by `document.activeElement !== input`. The editor node is destroyed and rebuilt by the repaint, hence the restore. (source: data-table.html:1124-1129) React note: `useLayoutEffect` keyed on `editing`; if the input stays mounted across renders in React you should NOT re-select on every render — only on open — or you will clobber the caret while typing.
+- [ ] **E-17 `clearEditing()` clears `picking`, `editing` and `confirmRow`, and cancels all in-flight collapse and enter animations** — and it runs on search, filter change, page change (prev/next/number), "Reset order" and `startDraft`. It does NOT commit the open editor: an uncommitted value is discarded. (source: data-table.html:1292-1300, 604-609, 904, 1118, 1427, 1436, 1442-1443)
+- [ ] **E-18 Editing survives sort** (no `clearEditing()` there) and survives selecting/expanding a row.
+- [ ] **E-19 Only the six data columns are editable** — `id`, `owner`, `activity`, `plan` and `note` have no editor. (source: data-table.html:792-820)
+- [ ] **E-20 Edits are visible immediately everywhere** — the record object is mutated, so the detail pane, the search index and the sort all see the new value on the next derive. (source: data-table.html:1285)
+- [ ] **E-21 Pressing the pencil again (now a check) disarms the row.** (source: data-table.html:1197)
+- [ ] **E-22 Clicking outside the table while merely armed (no editor open) does NOT disarm** — the mousedown-capture listener returns early unless `state.editing` is set. Only Escape, the pencil, a delete, or a `clearEditing()` trigger disarms. (source: data-table.html:1307-1308)
+
+## 10. Draft row
+
+- [ ] **D-01 The "+" button opens a draft row.** (source: data-table.html:1431, 902-912)
+- [ ] **D-02 Pressing "+" while a draft is already open just refocuses its first field** — it does not create a second draft or reset the typed values. (source: data-table.html:903)
+- [ ] **D-03 Opening a draft calls `clearEditing()` first, seeds `{name:"", date: todayLabel(), status:"In progress", mobile:"", email:"", address:""}`, and sets `page = 0`.** (source: data-table.html:904-911)
+- [ ] **D-04 `todayLabel()` is `DD Month, YYYY` with a zero-padded day** (e.g. `05 March, 2026`), from the local clock. (source: data-table.html:850-853, 543-544)
+- [ ] **D-05 The draft `<tbody>` is appended BEFORE the page rows, so it is pinned above them** — on every page, not just page 1. Paging away does not discard it. (source: data-table.html:1087-1092, and note `clearEditing()` never touches `state.draft`)
+- [ ] **D-06 The draft is excluded from filtering, sorting, the Total/Matching stats, the footer total and the page count.** (see S-10)
+- [ ] **D-07 The draft blocks the empty state** — `empty.hidden = visible.length !== 0 || !!state.draft`. (source: data-table.html:1102)
+- [ ] **D-08 The draft's grip and check cells are empty** — it cannot be dragged or selected, and it has no chevron/expand. (source: data-table.html:889-891)
+- [ ] **D-09 Every non-status column renders a `.draft-input`** with `placeholder` and `aria-label` = the column label, in `state.cols` order. (source: data-table.html:875-887)
+- [ ] **D-10 Draft inputs are uncontrolled and read back by `syncDraft()` at the top of every render** — typing survives any repaint. (source: data-table.html:863-868, 1034) React note: either keep them uncontrolled with a ref-based read-back, or make them controlled; do not mix.
+- [ ] **D-11 The draft's status cell is a pick button that opens the same status picker**, keyed by `editing = {id:"__draft__", key:"status"}`. (source: data-table.html:872-883, 1205)
+- [ ] **D-12 Save validates ONLY `name`** — every other field may be blank. (source: data-table.html:918-925)
+- [ ] **D-13 An empty name re-renders, adds `.invalid` (red border) to the name input imperatively, and focuses it** — the class is not in state, so the next `paintDraft()` wipes it. (source: data-table.html:919-924, 287) React note: this is a transient, non-state visual; either replicate with a ref + class toggle, or add a `draftInvalid` state flag cleared on the next edit (a visible-but-acceptable difference — call it out in review).
+- [ ] **D-14 Save `unshift`s the record at the TOP of `state.data`** with trimmed values, `owner: "Unassigned"`, `activity: "Just now"`, `plan: "Standard"`, `note: ""`, then clears `draft` and `editing` and sets `page = 0`. (source: data-table.html:927-944)
+- [ ] **D-15 The new id is `"REC-" + (max(numeric parts of all existing ids) + 7)`**, falling back to `4813 + 7` when there are no numeric ids. (source: data-table.html:855-861)
+- [ ] **D-16 Save runs `syncDraft()` first**, so the values used are whatever is in the DOM at that instant. (source: data-table.html:915)
+- [ ] **D-17 The cross discards the draft** with no confirmation. (source: data-table.html:1213)
+- [ ] **D-18 Enter inside a draft input saves the draft** (and `preventDefault()`s). (source: data-table.html:1324-1326)
+- [ ] **D-19 Escape discards the draft** — but only after `confirmRow` and `editing` (see KB-03). (source: data-table.html:1334)
+- [ ] **D-20 The first render after opening focuses the first draft input, once** — `focusDraft` is a one-shot flag. (source: data-table.html:1132-1136, 848) React note: `useLayoutEffect` on draft-open with a ref; under StrictMode make sure it does not fight the user's caret on a double-invoke.
+- [ ] **D-21 The draft row is tinted accent 6% on the whole `tr`** (no `:not(.selected)` guard needed). (source: data-table.html:215)
+- [ ] **D-22 The draft's action cell uses the same check/cross pair as the delete confirm, but the check is ACCENT, not red** — red is the system's destructive-only signal. (source: data-table.html:260-262, 893-898)
+
+## 11. Delete + confirm flow
+
+- [ ] **K-01 The trash button arms a confirmation** — `confirmRow = id`, and it clears `picking` and `editing` (editing and deleting are separate intents). It does not delete anything. (source: data-table.html:1187-1191)
+- [ ] **K-02 The confirming row swaps both action buttons for check + cross, and the CHECK deliberately occupies the pencil's slot** — so a second click where the trash button was hits Cancel, not Confirm. (source: data-table.html:822-831) React note: keep the slot order; it is a safety property, not a layout accident.
+- [ ] **K-03 The confirming row is tinted `color-mix(in srgb, var(--danger) 8%, var(--ground))`, overriding even the selected background** (higher specificity, no `:not(.selected)`). (source: data-table.html:212-214)
+- [ ] **K-04 Any other `[data-act]` click cancels a pending delete** — the click handler nulls `confirmRow` up-front for every action except `delete`, `confirmdelete` and `canceldelete`. That includes sort, select-all, select, expand, edit, pick, setstatus, savedraft, canceldraft. (source: data-table.html:1147-1150)
+- [ ] **K-05 Clicking trash on a different row moves the confirmation to that row** (there is only ever one `confirmRow`). (source: data-table.html:1188)
+- [ ] **K-06 A click on non-`[data-act]` chrome does NOT cancel the confirm** — no listener fires. The confirm survives clicking the page background, the search field's surround, etc. (Clicking into the search input while an editor is open does render, but `confirmRow` and `editing` are mutually exclusive.) (source: data-table.html:1143-1144)
+- [ ] **K-07 `confirmdelete` clears `confirmRow` then calls `dropRecords(r => r.id === id)`.** (source: data-table.html:1193-1196)
+- [ ] **K-08 `dropRecords` resolves the match set FIRST** — because the cleanup clears `state.selected`, a predicate like `r => state.selected[r.id]` would match nothing if re-run afterwards. (source: data-table.html:1351-1356) React note: the port's bulk-delete-style helpers must keep this ordering discipline.
+- [ ] **K-09 Per doomed id the cleanup detaches the node, deletes it from `bodyCache`, `selected`, `expanded`, nulls `picking` / `confirmRow` / `editing` if they point at it, and ends its collapse and enter timers.** (source: data-table.html:1357-1367) React note: unmount handles the node; the state cleanup is still yours.
+- [ ] **K-10 The record is removed from `state.data` by filtering out the doomed ids.** (source: data-table.html:1368)
+- [ ] **K-11 Escape cancels a pending confirm before anything else** (see KB-03).
+- [ ] **K-12 There is no bulk delete and no undo in the prototype** — despite what the handoff README describes. (source: data-table.html:1439-1440)
+- [ ] **K-13 Deleting the last row of the last page pulls the page index down on the next render** (S-06).
+
+## 12. Toolbar & stats
+
+- [ ] **TB-01 Three stats, left to right: Total, Matching, Selected.** (source: data-table.html:386-400, 1048-1050)
+- [ ] **TB-02 Total = `state.data.length`** — excludes the draft, ignores filters. (source: data-table.html:1048)
+- [ ] **TB-03 Matching = `filtered.length`** — after status + query, BEFORE pagination. (source: data-table.html:1049)
+- [ ] **TB-04 Selected = truthy count across all pages.** (source: data-table.html:1046, 1050)
+- [ ] **TB-05 Search input: placeholder "Search name, email or address", `aria-label="Search records"`, 2px ink border, `#f8f4f4` fill, `flex: 1 1 280px`, min 220px, max 380px.** (source: data-table.html:407, 96-100)
+- [ ] **TB-06 The segmented control is a single sliding thumb**, not per-option backgrounds: an absolutely positioned `<span class="seg-thumb">` under the labels (`z-index: 1` on the options), transitioning `transform` and `width` over `260ms cubic-bezier(.2,.7,.3,1)`. (source: data-table.html:110-127, 593-596) React note: **superseded by DEV-12** — the port replaces the segmented switch with a dropdown, so there is no thumb to animate.
+- [ ] **TB-07 The thumb is measured from rects, not `offsetLeft`** — `x = active.rect.left - seg.rect.left - seg.clientLeft`, because the thumb is positioned against the padding box while `offsetLeft` is reported against the border box and `.seg` carries a 2px border. (source: data-table.html:613-631) React note: same measurement, from a layout effect with refs to the container and the active button.
+- [ ] **TB-08 The thumb NEVER animates on first placement** — `positionThumb(thumbPlaced)` with `thumbPlaced` starting `false`, flipped to `true` right after. (source: data-table.html:592, 1054-1055) React note: a `hasPlaced` ref; under StrictMode the double-invoked effect must not "use up" the first placement and then slide on the real one.
+- [ ] **TB-09 Silent re-measure on `resize` and on `document.fonts.ready`** — both pass `animate = false`, so the thumb never slides for a re-measure (option widths depend on the webfont and on where the toolbar wraps). (source: data-table.html:633-638) React note: `ResizeObserver` on the seg container is a better mechanism than `window.resize`; keep the no-animate flag either way.
+- [ ] **TB-10 `no-anim` is applied, the width/transform are written, then a forced reflow (`void segThumb.offsetWidth`) flushes before the class is removed** — otherwise re-arming the transition in the same task animates the jump. (source: data-table.html:624-630)
+- [ ] **TB-11 `positionThumb` bails out when the active option has zero width** (not laid out yet). (source: data-table.html:621)
+- [ ] **TB-12 `positionThumb` runs on EVERY render**, so the thumb re-measures continuously and animates from the second render on. (source: data-table.html:1054)
+- [ ] **TB-13 Every option, including the last, keeps `border-right: 2px solid var(--ink)`** — so there is a doubled rule at the right edge of the control. Do not "fix" it without flagging it. (source: data-table.html:120-128)
+- [ ] **TB-14 Options are `aria-pressed` buttons, wrapped in `role="group" aria-label="Status filter"`; the pressed option's text goes to `#f3f2f2`.** (source: data-table.html:408, 601-603, 1053, 129) React note: **superseded by DEV-12** — the options become `role="option"` in a `role="listbox"`, and carry `aria-selected` instead.
+- [ ] **TB-15 "Reset order" clears the sort and restores the default column order, and calls `clearEditing()`. It does NOT restore the row order, the selection, the expansion, the query, the filter or the page.** (source: data-table.html:1433-1438) React note: the label overstates what it does; keep the behaviour, keep the label.
+- [ ] **TB-16 "New record" is a 42px accent square with an 18px Lucide `plus` at stroke-width 4**, `title` and `aria-label` "New record". (source: data-table.html:416-418, 133-139)
+- [ ] **TB-17 Toolbar layout: `display:flex; align-items:stretch; gap:12px; padding:18px 0; flex-wrap:wrap`, with a `flex:1` spacer between the filter and the selection actions.** (source: data-table.html:91-95, 130) React note: the rows-per-page control (DEV-13) sits between the filter and the spacer; the layout rule itself is unchanged.
+
+## 13. Footer & pager
+
+- [ ] **FT-01 "Showing **X** of N entries" — the range in `<strong>` (ink, 700), the rest 12px `#605d5d`.** (source: data-table.html:447, 331-333)
+- [ ] **FT-02 The range is `"0"` when nothing matches, otherwise `(start+1) + "–" + Math.min(start+perPage, filtered.length)`** with an EN DASH (U+2013), not a hyphen. (source: data-table.html:1105-1107)
+- [ ] **FT-03 The footer total is `filtered.length`, not `data.length`** — it tracks search and filter. (source: data-table.html:1108)
+- [ ] **FT-04 Pager labels are `‹ Prev` (U+2039) and `Next ›` (U+203A).** (source: data-table.html:449-451)
+- [ ] **FT-05 Number buttons: min-width 34, height 34, 2px `#bab6b6` border, 12px/700; the active one is accent-filled with `#f3f2f2` text.** (source: data-table.html:341-351)
+- [ ] **FT-06 Disabled Prev/Next get NO disabled styling** — `.btn-secondary:disabled` exists but `.pager-nav` has none, and its explicit `color: var(--n700)` beats the UA disabled colour. They look identical to enabled, they just do nothing. (source: data-table.html:141, 334-340) React note: replicate (or flag it as an intentional fix in review, but do not change it silently).
+- [ ] **FT-07 Footer frame: `border-top: 2px solid #201e1d`, `padding: 18px 0 0`, `justify-content: space-between`, wraps, gap 24px.** (source: data-table.html:325-330)
+
+## 14. Empty state
+
+- [ ] **EM-01 Shown only when the visible page has zero rows AND there is no draft.** (source: data-table.html:1102)
+- [ ] **EM-02 It lives OUTSIDE the table** — the accent header row (logo, select-all, column headers) stays on screen above it. (source: data-table.html:440-443)
+- [ ] **EM-03 Copy is exactly: "No records match" (16px/700) over "Clear the search field or pick a different status filter." (13px `#605d5d`).** (source: data-table.html:441-442, 327-329)
+- [ ] **EM-04 It carries `border-bottom: 2px solid #201e1d` and `padding: 56px 0`, left aligned.** (source: data-table.html:327)
+- [ ] **EM-05 With zero results the pager still renders a single page-1 button** (`pageCount = max(1, …)`), Prev and Next are both disabled, and the footer reads "Showing 0 of 0 entries". (source: data-table.html:1038, 1105-1122)
+- [ ] **EM-06 Hiding uses the `hidden` attribute plus `[hidden] { display: none !important }`.** (source: data-table.html:353) React note: conditional render instead.
+
+## 15. Focus management
+
+- [ ] **FO-01 The open editor is refocused and re-selected after every render** (see E-16).
+- [ ] **FO-02 A freshly opened draft focuses its first input exactly once** (see D-20).
+- [ ] **FO-03 An empty-name save focuses the name input and marks it invalid** (see D-13).
+- [ ] **FO-04 The mousedown-capture `preventDefault()` suppresses the blur so focus does not move before the commit, and the click still lands** (see E-12).
+- [ ] **FO-05 After a commit, focus is NOT restored anywhere** — the input is destroyed and focus falls to `<body>`. The port should not "improve" this silently. (source: data-table.html:1278-1290)
+- [ ] **FO-06 Focus is lost after a delete, a page change and a reorder** — nodes are replaced with no focus bookkeeping. (source: data-table.html:1351-1369)
+- [ ] **FO-07 `:focus-visible` is a 2px accent outline at 2px offset on `button`, `input` and `th`** — the browser default is never used. (source: data-table.html:60-63)
+- [ ] **FO-08 Grips are non-focusable `<span>`s** — they are not in the tab order at all. (source: data-table.html:751, 969)
+
+## 16. Keyboard
+
+- [ ] **KB-01 Enter inside a `.draft-input` saves the draft** (`preventDefault()` first). (source: data-table.html:1324-1326)
+- [ ] **KB-02 Enter inside a `.cell-input` commits the edit and renders** (`preventDefault()` first) — it does NOT save a draft and does NOT disarm the row. (source: data-table.html:1327-1330)
+- [ ] **KB-03 Escape unwinds exactly one level per press, in this order: `confirmRow` → `editing` → `draft` → `picking`.** With a pending delete AND an armed row, the first Escape only cancels the delete. (source: data-table.html:1331-1336) React note: one document-level `keydown` effect; keep the else-if chain order literally.
+- [ ] **KB-04 Escape discards an open editor's value** — it sets `editing = null` without committing. (source: data-table.html:1333)
+- [ ] **KB-05 The keydown listener is on `document`**, so Escape works no matter where focus is. (source: data-table.html:1322)
+- [ ] **KB-06 Everything else is native button behaviour** — Enter/Space activate the sort, checkbox, chevron, action and pager buttons because they are real `<button type="button">`s. (source: throughout)
+- [ ] **KB-07 Tab order is DOM order; leaving a cell editor by Tab commits it via `focusout`** (see E-13).
+- [ ] **KB-08 There is NO arrow-key navigation, no typeahead, and no keyboard path to reorder rows or columns.** (see the deviations section)
+- [ ] **KB-09 Escape with nothing open does nothing** (no render). (source: data-table.html:1331-1336)
+
+## 17. Reduced motion
+
+- [ ] **MO-01 The prototype animates by DEFAULT even when the OS asks for reduced motion** — `forceMotion = !/[?&]motion=auto/.test(location.search)`, and `?motion=auto` hands control back to the OS. Demonstrating the motion is the point of the prototype. (source: data-table.html:649-653) React note: the port INVERTS this — see the deviations section. The `motion` prop replaces the query string.
+- [ ] **MO-02 When forcing, `data-motion="force"` is set on `<html>`**, and every reduced-motion CSS rule is written as `html:not([data-motion="force"]) …`. (source: data-table.html:652, 366-373) React note: put the equivalent attribute on `.dt-root`, not `<html>`, and scope the selectors to it.
+- [ ] **MO-03 Reduced motion SHORTENS durations to 1ms, it never sets `animation: none`** — the collapsing pane is unmounted by its own `animationend`, which `animation: none` would never fire. (source: data-table.html:355-373) React note: keep this. If you disable animations outright you must also unmount the pane synchronously, or expanded rows will never close.
+- [ ] **MO-04 The reduced-motion block is LAST in source order** — it overrides the `animation`/`transition` shorthands above at equal specificity, so order decides. (source: data-table.html:355-374)
+- [ ] **MO-05 Reduced motion covers: the enter and collapse animations, the chevron rotation, the sort caret, the seg thumb, and the seg option colour.** (source: data-table.html:367-373) React note: the last two are gone with the segmented switch (DEV-12); the filter menu's own entrance and caret take their place in the set.
+- [ ] **MO-06 The JS `reduceMotion` getter gates ONLY the FLIP reorder** — it is read live on every reorder (a getter, not a snapshot), so an OS preference change takes effect without a reload. (source: data-table.html:653, 689, 699) React note: `useSyncExternalStore` over the media query, or a `matchMedia` listener; a value captured once at mount is a parity break.
+
+## 18. Accessibility attributes
+
+- [ ] **A-01 Search input: `aria-label="Search records"`.** (source: data-table.html:407)
+- [ ] **A-02 Filter group: `role="group" aria-label="Status filter"`; each option is `aria-pressed`.** (source: data-table.html:408, 603, 1053)
+- [ ] **A-03 Select-all: `aria-pressed` + `aria-label="Select all rows"`.** (source: data-table.html:430, 1077-1079)
+- [ ] **A-04 Row checkbox: `aria-pressed` + `aria-label="Select row"`** — generic, not per-record. (source: data-table.html:970-973)
+- [ ] **A-05 Chevron: `aria-expanded` + `aria-label="Toggle details"`.** (source: data-table.html:807-810)
+- [ ] **A-06 Data `th`: `aria-sort` = ascending / descending / none.** (source: data-table.html:1068-1070)
+- [ ] **A-07 Edit button: `aria-pressed={armed}` with `title`/`aria-label` switching between "Edit record — then pick a field" / "Edit record" and "Done editing".** (source: data-table.html:832-838)
+- [ ] **A-08 Delete / confirm / cancel buttons carry `aria-label`s "Delete record", "Confirm delete", "Cancel delete"; draft actions "Save record" / "Discard record".** (source: data-table.html:824-830, 839-841, 893-897)
+- [ ] **A-09 Status picker: `role="group" aria-label="Edit status"`.** (source: data-table.html:777)
+- [ ] **A-10 Cell input: `aria-label="Edit <Column label>"`; draft inputs: `aria-label` = the column label, and the same string as `placeholder`.** (source: data-table.html:787-789, 884-886)
+- [ ] **A-11 Active pager number: `aria-current="page"`.** (source: data-table.html:1116)
+- [ ] **A-12 The "New record" button is icon-only with `title` + `aria-label`.** (source: data-table.html:416)
+- [ ] **A-13 Known accessibility GAPS in the prototype (record them; do not silently paper over them without telling the reviewer)** — no `aria-live` anywhere (sort, page, filter, selection and reorder changes are silent); no `<caption>` and no `scope` on any `th`; the detail row is not associated with its chevron (`aria-controls`/`id`); checkboxes are `aria-pressed` buttons rather than real checkboxes (no mixed state); grips are not focusable; drag-and-drop is pointer-only; the logo `<img>`'s alt text is absent. (source: data-table.html throughout)
+
+## 19. Styling and tokens (visual parity)
+
+- [ ] **V-01 Tokens: `--accent #1d2d46`, `--ground #f3f2f2`, `--surface #eae9e9`, `--ink #201e1d`, `--n100 #f8f4f4`, `--n300 #d7d3d3`, `--n400 #bab6b6`, `--n500 #9b9797`, `--n600 #7d7979`, `--n700 #605d5d`, `--danger #ec3013`, `--success #2f7d4f`, `--reversed #f3f2f2`, `--cell-pad-y 15px|9px`.** (source: data-table.html:32-47) React note: define them on `.dt-root`, and let `accentColor` / `density` override via inline style.
+- [ ] **V-02 Radius is 0 everywhere; no shadows anywhere except the 3px inset selection marker; structural borders are 2px, row dividers 1px `#d7d3d3`, selection squares 2.5px.** (source: README "Borders"/"Radius"; data-table.html throughout)
+- [ ] **V-03 Archivo 400–800, embedded as two woff2 faces (latin + latin-ext), `font-display: swap`, with `system-ui, sans-serif` fallback.** (source: data-table.html:8-28) React note: ship the same two woff2 files under `lib/fonts/` with a `fonts.css`; do not pull Google Fonts at runtime in the library build.
+- [ ] **V-04 Page header: flex, `align-items: flex-end`, `border-bottom: 2px solid #201e1d`, `padding-bottom: 18px`, gap 32; kicker 11/600/.18em uppercase `#7d7979` with 10px bottom margin; `h1` 44/800/-.025em/line-height .95; stats gap 40 with `padding-bottom: 4px`, labels 10/600/.16em uppercase, values 22/700.** (source: data-table.html:80-90)
+- [ ] **V-05 Table header row: accent background, `#f3f2f2` text, `border-bottom: 2px solid` accent, `border-right: 2px solid rgba(243,242,242,.35)` (none on the Action cell), padding 12px, 10/700/.16em uppercase, left aligned; logo cell 56px centred with `8px 10px` padding; check cell 56px with `12px 8px`; Action cell 130px with `12px 16px 12px 12px`.** (source: data-table.html:152-165)
+- [ ] **V-06 `th.col-data { cursor: default; opacity: .92 }` and `.is-sorted { opacity: 1 }`; `.th-inner` is a `gap: 7px` flex row with `user-select: none`; `.th-sort` re-inherits `letter-spacing` and `text-transform` explicitly because `font: inherit` does not carry them.** (source: data-table.html:157-178)
+- [ ] **V-07 Grips: header grip 13px `rgba(243,242,242,.55)`, row grip 14px `#bab6b6`, both `letter-spacing: -2px`, `cursor: grab` → `grabbing` on `:active`, glyph `⠿` U+283F.** (source: data-table.html:166-169, 180, 225)
+- [ ] **V-08 Cells: `padding: var(--cell-pad-y) 12px`, `border-bottom: 1px solid #d7d3d3`, `vertical-align: middle`; grip cell `… 10px` centred; check cell `… 8px` centred; action cell `… 16px … 12px`.** (source: data-table.html:216-224)
+- [ ] **V-09 Zebra: `tbody.zebra-odd > tr:first-child:not(.selected)` gets `#f8f4f4`, applied on the VISIBLE page index (`index % 2 === 1`), so it re-stripes per page.** (source: data-table.html:208, 955)
+- [ ] **V-10 Name cell: `gap: 9px` flex; chevron 18px borderless button holding a 16px chevron-down at stroke-width 4; name at weight 700; other text weight 500 with `font-variant-numeric: tabular-nums`; email and address in `#605d5d`.** (source: data-table.html:227-238, 816-818)
+- [ ] **V-11 Pills: `inline-block`, `padding: 4px 9px`, `border: 2px solid`, 10/700/.1em uppercase, `white-space: nowrap`; Success `#2f7d4f`, In progress text `#605d5d` border `#9b9797`, Failed `#ec3013`.** (source: data-table.html:240-249)
+- [ ] **V-12 Icon buttons are 30px squares with a 2px border, gap 8; edit = accent (filled when armed), delete = danger outline, confirm = danger fill, cancel = ink outline, save = accent fill.** (source: data-table.html:251-263)
+- [ ] **V-13 Icons are inline SVGs at `fill: none; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter`: check 12px/sw4, done 15px/sw2, cross 15px/sw2, chevron 16px/sw4, pencil 15px/sw2, trash 15px/sw2, plus 18px/sw4.** (source: data-table.html:562-577, 417)
+- [ ] **V-14 Detail cell: `padding: 0 12px 18px 46px`, background `#eae9e9`, `border-bottom: 1px solid #d7d3d3`; grid is 4 equal columns with `gap: 1px` over a `#d7d3d3` background and a 1px `#d7d3d3` border (hairline rules), `overflow: hidden`; panes `#f8f4f4` with `16px 18px` padding; labels 10/700/.16em uppercase `#7d7979` with 8px bottom margin; values 14/600; the Note pane spans 4 and is 14px / `line-height 1.5` / `max-width 70ch` / `text-wrap: pretty`.** (source: data-table.html:300-324)
+- [ ] **V-15 Table scroll: `.table-scroll { overflow-x: auto }` around a `table-layout: fixed`, `border-collapse: collapse`, `width: 100%`, `min-width: 1222px`, 13px table.** (source: data-table.html:147-151)
+- [ ] **V-16 `::selection { background: #d7d3d3 }` and `input, button { font-family: inherit }`.** (source: data-table.html:57-59) React note: scope both under `.dt-root`; no global `body` rules in the library stylesheet.
+- [ ] **V-17 Motion durations: 180ms ease (caret, chevron), 200ms ease-in-out (pane enter), 180ms ease-in-out forwards (pane collapse), 260ms `cubic-bezier(.2,.7,.3,1)` (seg thumb), 200ms `cubic-bezier(.2,.7,.3,1)` (FLIP), 160ms ease (seg option colour).** (source: data-table.html:64-76, 113-131, 186-190, 231, 680)
+
+## 20. Demo data
+
+- [ ] **DA-01 17 records total** — one hand-written `REC-4813` "Tunc Yanik" first, then 16 generated from `NAMES`. (source: data-table.html:489-514)
+- [ ] **DA-02 Generated ids are `"REC-" + (4820 + i * 7)`** → `REC-4820` … `REC-4925`. (source: data-table.html:502)
+- [ ] **DA-03 `date = DATES[i % 4]`, `status = STATUS[i]`, `address = CITIES[i % 8]`, `owner = NAMES[(i+5) % 16]`, `activity = ACTIVITY[i % 4]`, `plan = PLANS[i % 4]`.** (source: data-table.html:503-511)
+- [ ] **DA-04 `mobile = "+1 " + (200+i) + " 0" + (40+i) + " " + (1000 + i*37)`** — e.g. `+1 200 040 1000`. (source: data-table.html:506)
+- [ ] **DA-05 `email = slug(name) + "@xyz.com"` where `slug` lowercases, replaces every non `a-z` run with `.`, and strips leading/trailing dots.** (source: data-table.html:487, 507)
+- [ ] **DA-06 Every generated record shares the same `note` string** ("Imported from the March intake batch. …"). (source: data-table.html:512)
+- [ ] **DA-07 The Tunc Yanik record has its own values, including a Turkish address and `date: "19 August, 2026"`.** (source: data-table.html:491-501)
+- [ ] **DA-08 `makeData()` builds a NEW array of NEW objects on every call** — never a shared literal, because inline editing mutates the objects and a shared literal would carry edits across a reset. (source: data-table.html:489-490) React note: `defaultRecords` must default to a factory call, not a module-level constant, or two mounted instances share (and corrupt) each other's records.
+
+---
+
+## Prototype vs. README
+
+The handoff README describes an earlier iteration. The prototype is authoritative; these are the
+places they disagree, so a reviewer does not "fix" the port back to the README:
+
+| Topic | README says | Prototype does |
+| --- | --- | --- |
+| Bulk actions | Full-width accent bulk bar with Export / Archive / **Delete** / **Clear** | Two disabled-until-selected `Export` / `Archive` buttons in the toolbar; no Delete, no Clear, no bar (data-table.html:410-413) |
+| Collapse | "Collapse is instant (the row unmounts)" | Animated `dtCollapse 180ms`, row stays mounted until `animationend` (data-table.html:314-316, 1239-1259) |
+| Expand easing | `200ms ease-out`, `max-height: 440px` | `200ms ease-in-out`, `max-height: var(--pane-h)` measured per row (data-table.html:64-70, 313) |
+| Row-selected marker | `border-left: 3px solid` | `box-shadow: inset 3px 0 0` on the first `td` (data-table.html:202-207) |
+| Delete | Trash deletes immediately | Trash arms a two-step confirm (data-table.html:1187-1196) |
+| Edit pencil | "stub" | Full inline editing: arm → pick → text/status editor (data-table.html:1196-1211) |
+| New record | "No handler in the prototype" | Opens a validated draft row (data-table.html:902-944) |
+| Record count | 16 records, `REC-4820`… | 17 records, `REC-4813` first (data-table.html:489-514) |
+| Animations | "only the two above" | Also FLIP reorder, seg thumb, pane collapse |
+| Motion | not discussed | Animates by default; `?motion=auto` honours the OS (data-table.html:649-653) |
+
+---
+
+## Known deviations the port SHOULD make
+
+These are intentional and must NOT be filed as parity failures. Each one still has to be visible
+and reviewable.
+
+- [ ] **DEV-01 Honour `prefers-reduced-motion` by DEFAULT.** The prototype forces motion on so it demos well on a locked-down presenting machine, and its own comment says "the production port should invert this: honour the preference by default". The `motion` prop expresses all three states: `'auto'` (default — honour the OS), `'always'` (the prototype's forced behaviour, for demos), `'never'`. Keep MO-03's rule: shorten durations to 1ms rather than removing animations, or unmount the collapsing pane synchronously — never leave a pane that can't close.
+- [ ] **DEV-02 Scoped class names.** Everything renders under a single `.dt-root`; every selector in `DataTable.css` is prefixed (`.dt-root .dt-toolbar`, `.dt-pill`, …). No bare element selectors escaping the root, and the `--accent` / `--cell-pad-y` custom properties are set on `.dt-root`, not `documentElement`, so two instances with different accents can coexist on one page.
+- [ ] **DEV-03 No global page styles from the library.** The prototype's `html, body { margin: 0 }`, `body { padding: 40px 48px 64px; background: var(--ground) }`, `.shell { max-width: 1400px; margin: 0 auto }`, `* { box-sizing: border-box }`, `::selection` and `[hidden]` rules belong to the HOST page. `demo/demo.css` reproduces them so the demo looks identical to the prototype; `lib/DataTable.css` must not contain them (scope `box-sizing` and `::selection` under `.dt-root`).
+- [ ] **DEV-04 Keyboard-accessible reordering is ADDED.** The prototype has none, and the handoff explicitly asks for it. Proposal: make the row grip and the column header grip focusable (`tabindex=0`, `role="button"`, `aria-label="Reorder row: Amelia Hart"` / `"Reorder column: Email ID"`); **Alt+ArrowUp / Alt+ArrowDown** moves the focused row one position (and, like a pointer drag, clears the sort); **Alt+ArrowLeft / Alt+ArrowRight** moves the focused column one position (and, like a pointer drag, does not clear the sort). Focus follows the moved element. Each move announces through a single polite `aria-live` region owned by `.dt-root` — e.g. "Amelia Hart moved to position 3 of 17", "Email ID moved to position 4 of 6". The FLIP animation runs for keyboard moves too, subject to DEV-01. Prefer a real DnD library over the raw HTML5 handlers for the pointer path, but only if it preserves R-06 (live reorder on enter, not on drop) and R-13 (the FLIP curve).
+- [ ] **DEV-05 Icons stay inline SVG components.** `icons.tsx` exports real Lucide-shaped components (`Pencil`, `Trash2`, `ChevronDown`, `Check`, `X`, `Plus`) at the exact sizes and stroke widths in V-13, with `fill="none" stroke="currentColor" strokeLinecap="square" strokeLinejoin="miter"`. No `lucide-react` runtime dependency — the package stays dependency-free apart from React — and no `dangerouslySetInnerHTML`.
+- [ ] **DEV-06 Immutable state updates replace in-place record mutation** (S-08), which is what makes the `records` / `defaultRecords` / `onRecordsChange` controlled-uncontrolled pair possible. Observable behaviour must be unchanged.
+- [ ] **DEV-07 `onExport` / `onArchive` / `onSelectionChange` are wired** where the prototype has dead stubs (L-12). With no handler passed, the buttons keep their enabled/disabled behaviour and do nothing, exactly like the prototype.
+- [ ] **DEV-08 New props with no prototype equivalent:** `columns`, `title`, `kicker`, `showHeader`, `logoSrc`, `className`, `style`. Their defaults must reproduce the prototype exactly (`columns` = the six defaults, `title` = "Data table", `kicker` = "Records / Directory", `showHeader` = true, `logoSrc` = the bundled ALP mark).
+- [ ] **DEV-10 Only the grips start a drag.** The prototype makes the whole `<tr>` (R-01) and the whole data `<th>` (C-01) draggable. The port moves `draggable` onto the `⠿` grips themselves, refuses a `dragstart` that begins anywhere else in the table (so a cell's text and the logo image cannot be dragged either), and calls `setDragImage` with the row / header cell so the drag still *looks* the way it did when the row was the source. The grips keep their layout but get a padded hit area (the padding is cancelled by an equal negative margin, so no row or header changes height). Everything else in sections 7 and 8 — live reorder on `dragenter`, the once-bound `dragend`, `effectAllowed`, the hollowed-out source, the FLIP — is unchanged. This is what frees the cell body for DEV-11.
+- [ ] **DEV-11 Cell-range selection is ADDED.** An Excel-style rectangle over the data cells, independent of the checkbox selection (which stays keyed by record id, keeps driving the Selected stat and the Export / Archive buttons, and survives paging). Drag across cells to size it, Shift+click or Shift+arrow to extend, arrow keys to move it, Ctrl/Cmd+A for the page, Ctrl/Cmd+C to copy it to the clipboard as TSV (plus a `text/html` table, so it pastes into Excel and Sheets as cells), Escape to clear. The range is stored as page coordinates, not ids, so anything that reshuffles the page drops it — see `KEEPS_RANGE` in `state.ts`. The grid is one tab stop (roving `tabindex` on the moving corner), keyboard moves announce through the same live region as DEV-04, and the whole feature is behind `cellSelection` (default `true`); off, the cells go back to plain text selection. A press that lands on a control inside a cell (the row chevron) is left alone until the pointer leaves that cell, so the control still gets its click. Not supported: multi-rectangle selection with Ctrl+click, pasting, clearing cells, and auto-scrolling the horizontal overflow while sweeping past its edge.
+- [ ] **DEV-12 The status filter is a dropdown, not a segmented switch.** The prototype spends the width of a four-position switch on it (TB-06 – TB-14), with a selector that slides between the options; the port makes the same choice as a button plus a listbox popup, which is what leaves room for DEV-13 beside it. The options, their order and everything a pick *does* (F-05 – F-09) are unchanged. It is the select-only combobox pattern rather than a native `<select>`, whose popup is drawn by the OS and cannot carry the system's flat, square, accent-marked styling; that puts the keyboard contract on us — Enter / Space / arrow opens, arrows and Home / End move, Enter or Space commits, Escape closes without committing (and does not unwind the table's own Escape chain behind it), and focus returns to the button either way. `useSegmentedThumb` and TB-06 – TB-13's measurement machinery are deleted with it, and the menu's 140ms entrance and its caret rotation join the reduced-motion set in MO-05's place.
+- [ ] **DEV-13 Rows per page is a control, not just a prop.** The prototype fixes it in `data-props`. Here a slider in the toolbar owns it (4–24, widening if the host opens outside that range), the `rowsPerPage` prop seeds it, and `onRowsPerPageChange` reports it. Resizing follows the record at the top of the page rather than snapping back to page 1 — otherwise dragging the slider throws the user's place away on every step — and the existing page clamp (S-06) pulls back an overshoot at the end of the list. It reshuffles the page, so like a filter or a sort it drops the editing modes and the cell range (DEV-11) while leaving selection and expansion alone.
+- [ ] **DEV-09 The `?motion=auto` query-string switch is dropped** — the `motion` prop replaces it (DEV-01). The demo app may expose it as a control.
