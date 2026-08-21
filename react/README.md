@@ -75,7 +75,7 @@ own the list.
 | `rowsPerPage` | `number` | `8` | The page size the table **opens on**; the toolbar's slider owns it after that. |
 | `onRowsPerPageChange` | `(rows) => void` | — | Fired when that slider moves. |
 | `metrics` | `Partial<MetricPrefs>` | Sum, Success rate, Spring rate | What each **kind** of cell content reads as in the flow block. Merged over the defaults; read once, like `rowsPerPage`. See **The flow block**. |
-| `onMetricsChange` | `(prefs) => void` | — | Fired when the toolbar's **Show** panel moves one of them. Carries the whole record, not the one that moved. |
+| `onMetricsChange` | `(prefs) => void` | — | Fired when the toolbar's metric-cog panel moves one of them. Carries the whole record, not the one that moved. |
 | `zebraRows` | `boolean` | `true` | Odd rows on `#f8f4f4`. |
 | `title` | `string` | `Data table` | |
 | `kicker` | `string` | `Records / Directory` | |
@@ -83,7 +83,7 @@ own the list.
 | `logoSrc` | `string \| null` | the ALP mark | The header's first cell. `null` leaves it empty. |
 | `motion` | `'auto' \| 'always' \| 'never'` | `auto` | See **Motion**. |
 | `cellSelection` | `boolean` | `true` | Excel-style cell ranges. See **Selecting cells**. |
-| `onExport` / `onArchive` | `(selected) => void` | — | The two toolbar actions; they stay disabled until something is selected. |
+| `onExport` / `onArchive` | `(selected) => void` | — | The two selection actions, in the footer beside the pager; they stay disabled until something is selected. |
 | `onSelectionChange` | `(ids) => void` | — | |
 | `onEditRecord` | `(record) => void` | — | Fired when the pencil arms a row, for hosts that would rather open their own editor. |
 | `className` / `style` | | | Merged onto the root; `style` can override the accent and padding custom properties. |
@@ -174,7 +174,7 @@ There are two selections, and they do not talk to each other.
 
 **Rows** are selected with the checkboxes. That selection is keyed by record id,
 survives paging and filtering, drives the *Selected* stat and the Export /
-Archive buttons, and is what `onSelectionChange` reports.
+Archive buttons in the footer, and is what `onSelectionChange` reports.
 
 **Cells** are selected as a rectangle, the way a spreadsheet does it — drag
 across them, or click one and Shift+click another. It is a view-level thing:
@@ -190,8 +190,36 @@ reported to the host; the point of it is the clipboard.
 | `Shift` + arrow | stretch the rectangle |
 | `Home` / `End` | first / last column of the row (`Ctrl` too: first / last cell) |
 | `Ctrl`/`Cmd` + `A` | every cell on the page |
-| `Ctrl`/`Cmd` + `C` | copy the rectangle |
+| `Ctrl`/`Cmd` + `C` | copy the selection |
 | `Escape` | clear it |
+
+**A whole column** is the one selection a rectangle cannot express, because a
+rectangle stops at the edge of the page. Triple click a column's label — or
+press `Ctrl`/`Cmd` + `Space`, on the header or on any cell in that column — and
+the column is taken across *every* page: all 17 rows of it, not the 8 in front
+of you. That selection is not stored as corners but as the column's key, so it
+is not page-shaped and does not die like a rectangle: turning the page, resizing
+it, sorting, and reordering the rows or the columns all leave it exactly as true
+as it was. A changed record set does end it — a search, a filter chip, a delete
+— and so does starting a rectangle instead, or `Escape`.
+
+The header of a taken column carries a rule under its label, and on the page the
+selection's border closes only where the selection really ends: no top edge
+except on the first page, no bottom edge except on the last, so an open edge
+means there is more of it out of sight. `Ctrl`/`Cmd` + `C` copies all of it.
+
+**Sorting is the caret's job, not the label's.** The two used to be one button;
+they were split when the gesture arrived, because three clicks on a sort control
+is three sorts — you would watch the table sort ascending and then descending on
+the way to a selection that meant neither. So the arrow sorts and the title
+selects, and neither one reaches the other: sorting a taken column leaves it
+taken, and taking a column leaves the sort exactly where it was. A third click
+on the arrow itself, or on the grip, is three presses of that control and no
+gesture at all.
+
+The caret button's accessible name stays `Sort by Name`; it carries the shortcut
+as `aria-keyshortcuts` rather than reciting a second gesture on all six headers
+every time you tab past them.
 
 The copy carries both `text/plain` (tab-separated, Excel's quoting rule for
 values holding a tab, a newline or a quote) and `text/html` (a real `<table>`),
@@ -208,27 +236,35 @@ row chevron only becomes a selection if the pointer leaves that cell first.
 ### The flow block
 
 Select a run of cells that are all the same kind of thing and a panel appears in
-the toolbar, just left of **Export**, saying what they come to. A run of numbers
+the toolbar, just left of the cog that sets it, saying what they come to. A run of numbers
 totals; a run of **Status** cells reads as a rate. It is meant for the **Solved
 cases** column, but it is not tied to it — or to any column: what a rectangle
 answers is decided by what is *in* it, not by which columns it covers, so it
 keeps working when a host swaps the column set out.
 
-**What each kind reads as is a preference, not a mode.** The **Show** selector at
-the right of the toolbar holds one metric per kind of cell content — Sum,
-Product, Mean, Median, Highest or Lowest for numbers, and one rate per value for
-each enum column (Status, Favourite season) — and the *selection* decides which
-of them is in force. Set numbers to Mean once, and from then on dragging across
-counts reads a mean while dragging across statuses reads whatever the Status
-preference says, with nothing to change in between. The button names the metric
-on show rather than a setting of its own, so it tracks the selection; with
-nothing selected it falls back to the numbers preference.
+**What each kind reads as is a preference, not a mode.** The cog at the right of
+the toolbar holds one metric per kind of cell content — Sum, Product, Mean,
+Median, Highest or Lowest for numbers, and one rate per value for each enum
+column (Status, Favourite season) — and the *selection* decides which of them is
+in force. Set numbers to Mean once, and from then on dragging across counts
+reads a mean while dragging across statuses reads whatever the Status preference
+says, with nothing to change in between. The block itself names the metric it
+used, as its tag, so the cog says nothing back — it carries the reading in its
+accessible name and its tooltip, which track the selection the same way: counts
+read Sum, statuses read Success rate, and with nothing selected it falls back to
+the numbers preference.
 
-The panel is one section per kind, each its own radio group with its own current
-pick, and the section the selection is being read under is marked. A pick commits
-immediately and leaves the panel open, so one visit can set more than one kind.
-`metrics` seeds the record — partially, naming only the kinds you care about —
-and `onMetricsChange` reports the whole of it back.
+The panel opens on the kinds and nothing else — **Numbers**, **Status**,
+**Favourite season** — with the one the current selection is being read under
+marked in the accent. Press a kind and it expands in place into the metrics it
+can be read as, as its own radio group with its own current pick; a second kind
+takes the first one's place, so the panel is never longer than one list. The
+kinds are the heavier type of the two, the metrics under them lighter and
+indented, because the first question is which kind and the second is how to read
+it. A pick commits immediately and leaves both the panel and the section open, so
+one visit can set more than one kind. `metrics` seeds the record — partially,
+naming only the kinds you care about — and `onMetricsChange` reports the whole of
+it back.
 
 The rules are a spreadsheet's, and all of them predate the selector. Blank cells
 are skipped rather than counted as zero; a rectangle that is not all one kind
@@ -242,6 +278,11 @@ exponent form; and a rate is at most one decimal, with the count it was taken
 over beside it — `62.5% (5 of 8)`. Everything is formatted in the reader's
 locale.
 
+A whole-column selection is read the same way, over every page rather than over
+the one on screen, and the panel says so: an **ALL PAGES** tag beside the value,
+which appears only when there is more than one page to cover. Without it a total
+four times the size of the column in front of you would read as a bug.
+
 It sits after the toolbar's flex spacer, so it appears and disappears in the
 gap — the buttons beside it never move. It slides in from their side and fades
 back out the same way; the exit is held open by a timer, because an unmounted
@@ -253,8 +294,9 @@ The block is `aria-hidden`, with the reading appended to the live region that
 announces the selection instead — in sentence case, and naming the metric
 actually in force: "Mean 42.5.", "Success rate 62.5%."
 
-Not supported: Ctrl+click for a second rectangle, pasting, clearing cells, and
-auto-scrolling the horizontal overflow while sweeping past its edge.
+Not supported: Ctrl+click for a second rectangle, more than one column at a
+time, pasting, clearing cells, and auto-scrolling the horizontal overflow while
+sweeping past its edge.
 
 `cellSelection={false}` turns all of it off and gives the cells back plain text
 selection.
@@ -337,7 +379,7 @@ The animations themselves:
 | detail pane open | `200ms` `dt-expand`, to the pane's **measured** height |
 | detail pane close | `180ms` `dt-collapse`, from the height measured at the click |
 | row / column reorder | FLIP, `200ms cubic-bezier(.2,.7,.3,1)` |
-| filter chip popup, operator menu, add-filter list, the **Show** panel | `140ms` `dt-menu-in`, plus a `180ms ease` caret |
+| filter chip popup, operator menu, add-filter list, the metric-cog panel | `140ms` `dt-menu-in`, plus a `180ms ease` caret — the cog turns 60° and each kind's caret flips on the same clock |
 | filter block face, idle → armed → over → open | `140ms ease` background |
 | flow block | `140ms` `dt-sum-in`, `160ms` `dt-sum-out` |
 | sort caret, row chevron | `180ms ease` rotation and colour |
@@ -351,24 +393,32 @@ prototype could only do by drag:
 |---|---|
 | `Alt` + `↑` / `↓` on a row grip | move that row within the page |
 | `Alt` + `←` / `→` on a column grip | move that column |
+| click a column's caret | sort by it — ascending, descending, unsorted |
 | arrows / `Shift`+arrows in a cell | move / stretch the cell range (see **Selecting cells**) |
-| `Ctrl`/`Cmd` + `A` / `C` in a cell | select the page / copy the range |
+| `Ctrl`/`Cmd` + `A` / `C` in a cell | select the page / copy the selection |
+| `Ctrl`/`Cmd` + `Space` (cell or header) | select that whole column, every page |
 | any single-kind selection | reads out in a panel in the toolbar (see **The flow block**) |
 | `Enter` in a cell editor | commit the field |
 | `Enter` in the draft row | save the record |
 | `Escape` (focus inside the table) | back out one level: delete confirmation → open editor → draft row → armed row → cell range |
 | `↓` / `Enter` / `Space` on **Add filter** | open the column list; arrows and `Home` / `End` move, `Enter` adds a chip, `Escape` closes |
 | inside a filter chip | the operator menu answers the same keys; the value list is multi-select, so `Enter` / `Space` ticks rather than commits; `Escape` closes the chip and goes back to its button |
-| `↓` / `Enter` / `Space` on **Show** | open the preferences panel; arrows and `Home` / `End` move within a section, `Tab` crosses to the next, `Enter` / `Space` picks *without* closing, `Escape` closes and goes back to the button |
+| `↓` / `Enter` / `Space` on the metric cog | open the preferences panel, on the kind in force |
+| on a kind | `Enter` / `Space` expands it, `↓` goes in to its current metric, `↑` shuts it again, `Tab` crosses to the next kind |
+| inside a kind | arrows and `Home` / `End` move, `Enter` / `Space` picks *without* closing the panel or the section, `Tab` leaves for the next kind, `Escape` closes the panel and goes back to the cog |
 | `←` / `→` on the rows-per-page slider | one row at a time (`Home` / `End` for the ends) |
 
 Moves are announced through a polite live region. Sorted columns carry
 `aria-sort`, the selection boxes `aria-pressed`, the dock's operator and value
 lists `aria-selected` (they are `role="listbox"` popups, not toggle buttons —
 the add-picker marks the columns already docked `aria-disabled` instead), the
-**Show** panel's sections `role="radiogroup"` over `aria-checked` radios (one
-pick each, which is what makes them radios rather than a listbox), the chip
-buttons `aria-haspopup="dialog"` + `aria-expanded`, the row chevrons
+metric cog's kinds `aria-expanded` buttons over `role="radiogroup"` sections of
+`aria-checked` radios (one pick each, which is what makes them radios rather
+than a listbox; a shut section is unmounted, so it has no radio in the tree and
+no tab stop) under a button named "Showing <metric>. Set what each kind of cell
+selection reads as." — an icon-only control has to say both halves — the chip
+buttons
+`aria-haspopup="dialog"` + `aria-expanded`, the row chevrons
 `aria-expanded`, and the current page `aria-current`. Focus rings are
 `:focus-visible` only, 2px in the accent.
 
@@ -404,6 +454,9 @@ host app makes it unsafe:
   draggable and left the grip decorative; here `draggable` is on the grip, a
   `dragstart` from anywhere else in the table is refused, and `setDragImage`
   keeps the row (or header cell) as the thing you see under the cursor.
+- **Taking a whole column is new** — triple click a header label, or
+  `Ctrl`/`Cmd` + `Space` — and is the one selection the rectangle below cannot
+  express, since it runs past the end of the page. See **Selecting cells**.
 - **Cell-range selection is new**, and is what needed the row body free. See
   **Selecting cells**.
 - **The status filter became a filter dock.** The prototype spends a
@@ -412,13 +465,24 @@ host app makes it unsafe:
   dropdown the switch first became survives inside it, as the operator picker:
   a button plus a `role="listbox"` popup rather than a native `<select>`, whose
   OS-drawn popup cannot carry the system's flat, square styling.
-- **"Reset order" is gone, and the flow block's "Show" selector has its toolbar
+- **"Reset order" is gone, and the flow block's metric cog has its toolbar
   slot.** One button that restored the `columns` prop *and* cleared the sort was
   two undos wearing one label, and both are a keystroke away without it:
   `Alt`+arrows on a column grip move a column, and a third press on a sorted
   header clears the sort. What took the slot is the control that says what a
   cell selection reads as — the only other thing in the toolbar that the block
-  beside it speaks for. Nothing restores the initial column order any more.
+  beside it speaks for. It is a cog, and 42px square: the words it first carried
+  were the block's own tag repeated, and what is left — "set how these read" —
+  is one glyph, which pairs it with the New record square at the end of the
+  toolbar. Nothing restores the initial column order any more.
+- **Export and Archive sit in the footer, left of the pager.** The prototype
+  puts them in the toolbar. Everything else up there changes what the table
+  shows — the search, the rows-per-page slider, the metric cog, New record —
+  while these two do something with rows already chosen, which is what the
+  footer is about: "Showing 1–8 of 17 entries", and the way to the rest of
+  them. They keep the prototype's enabled-only-with-a-selection behaviour and
+  drop to the pager's 34px rank so the bottom strip reads as one row of
+  controls.
 - **The sum panel reads more than sums.** It began as one question — "what do
   these add up to" — and the answer to that is `null` for a column of statuses.
   Rather than a metric picker the selection has to be matched to, the toolbar
