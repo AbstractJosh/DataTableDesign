@@ -139,7 +139,6 @@ export type TableAction =
   | { type: 'toggleSort'; key: ColumnKey }
   | { type: 'moveColumn'; from: ColumnKey; to: ColumnKey }
   /** Put a whole column order back, sort intact. */
-  | { type: 'setColumnOrder'; cols: ColumnKey[] }
   /** A row reorder clears any active sort; a column reorder does not. */
   | { type: 'rowsReordered' }
   | { type: 'toggleSelect'; id: string }
@@ -188,9 +187,8 @@ const KEEPS_PENDING_DELETE: ReadonlySet<TableAction['type']> = new Set<TableActi
   'cancelDelete',
   'endCollapse',
   'endEnter',
+  // The tail of a column drag — not a click.
   'moveColumn',
-  // The tail of a column drag, exactly like `moveColumn` — not a click.
-  'setColumnOrder',
   'rowsReordered',
   'patchDraft',
   'dropIds',
@@ -210,9 +208,8 @@ const KEEPS_EDITING: ReadonlySet<TableAction['type']> = new Set<TableAction['typ
   'patchDraft',
   'endCollapse',
   'endEnter',
+  // Same drag, same rule: a column landing in its new slot is not a click.
   'moveColumn',
-  // Same drag, same rule: the column order landing back is not a click either.
-  'setColumnOrder',
   'rowsReordered',
 ])
 
@@ -220,8 +217,8 @@ const KEEPS_EDITING: ReadonlySet<TableAction['type']> = new Set<TableAction['typ
  * A cell range is a rectangle over the rows and columns as they are laid out
  * right now, so only actions that leave that layout alone may keep it. Toggling
  * a checkbox, expanding a pane and the animation callbacks all qualify;
- * searching, filtering, sorting, paging, reordering (`moveColumn` and
- * `setColumnOrder` alike) and opening an editor do not.
+ * searching, filtering, sorting, paging, reordering and opening an editor do
+ * not.
  */
 const KEEPS_RANGE: ReadonlySet<TableAction['type']> = new Set<TableAction['type']>([
   'setRange',
@@ -259,7 +256,6 @@ const KEEPS_WHOLE_COLUMN: ReadonlySet<TableAction['type']> = new Set<TableAction
   'setRowsPerPage',
   'toggleSort',
   'moveColumn',
-  'setColumnOrder',
   'rowsReordered',
   'toggleSelect',
   'setSelection',
@@ -458,13 +454,6 @@ function apply(state: TableState, action: TableAction): TableState {
       cols.splice(to, 0, cols.splice(from, 1)[0])
       return { ...state, cols }
     }
-
-    case 'setColumnOrder':
-      // Puts an order back verbatim, sort intact — a column dragged up to the
-      // filter dock reorders the header on its way past its neighbours, and the
-      // drop has to undo that before the chip appears. No `cleared` for the same
-      // reason `moveColumn` has none: it is the tail of a drag, not a click.
-      return { ...state, cols: action.cols.slice() }
 
     case 'rowsReordered':
       return { ...state, sort: null }

@@ -113,8 +113,18 @@ export interface DataTableProps {
    */
   cellSelection?: boolean
 
-  onExport?: (selected: DataTableRecord[]) => void
-  onArchive?: (selected: DataTableRecord[]) => void
+  /**
+   * Fired when an export is **saved**, not when Export is pressed: the press
+   * only starts the bar, and the file does not exist until the name box is
+   * confirmed. The component writes the `.csv` itself — this is a notification,
+   * so a host that wants to log the export or mark the records exported can,
+   * without having to reimplement the download.
+   *
+   * The records are the ones the exported cells came from, top to bottom. For a
+   * cell rectangle or a whole column that is *more* than the file holds: the
+   * file has the selected columns, this has the whole record behind each row.
+   */
+  onExport?: (exported: DataTableRecord[]) => void
   onSelectionChange?: (ids: string[]) => void
   /** Fired by the pencil when a row is armed for editing. */
   onEditRecord?: (record: DataTableRecord) => void

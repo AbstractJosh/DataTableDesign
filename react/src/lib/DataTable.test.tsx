@@ -29,6 +29,77 @@ const rowNames = () =>
 const byTitle = (title: string, root: ParentNode = document) =>
   root.querySelector(`[title="${title}"]`) as HTMLElement
 
+/* ---- aiming a drag ------------------------------------------------ *
+ * A reorder is committed on the drop, and which slot it lands in comes from a
+ * midpoint test against the cell under the pointer. jsdom supplies neither
+ * half: it has no `DragEvent`, so testing-library falls back to a plain
+ * `Event` and drops `clientX`/`clientY` from the init (`dataTransfer` is
+ * special-cased back on; nothing else is), and it lays nothing out, so every
+ * rect measures zero. So both halves are handed over here — a real box on the
+ * element the component measures, and a pointer position on the event.
+ * ------------------------------------------------------------------- */
+
+const dragOverWithin = (
+  target: HTMLElement,
+  measured: HTMLElement,
+  box: Partial<DOMRect>,
+  pointer: { clientX?: number; clientY?: number },
+) => {
+  const rect = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, ...box } as DOMRect
+  const spy = vi.spyOn(measured, 'getBoundingClientRect').mockReturnValue(rect)
+  const event = createEvent.dragOver(target)
+  Object.entries(pointer).forEach(([key, value]) =>
+    Object.defineProperty(event, key, { value }),
+  )
+  fireEvent(target, event)
+  spy.mockRestore()
+}
+
+/**
+ * A `dragstart` carrying a pointer position and a `setDragImage`, over a source
+ * with a real box — enough for the component to record where along the element
+ * the drag took hold. Same jsdom workaround as `dragOverWithin`: the
+ * plain-`Event` fallback drops `clientX`/`clientY`. Without the `setDragImage`
+ * there is no grab to record and the slot test falls back to the bare cursor,
+ * which is what every other drag test here exercises.
+ */
+const dragStartAt = (
+  grip: HTMLElement,
+  source: HTMLElement,
+  box: Partial<DOMRect>,
+  pointer: { clientX?: number; clientY?: number },
+) => {
+  const rect = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, ...box } as DOMRect
+  const spy = vi.spyOn(source, 'getBoundingClientRect').mockReturnValue(rect)
+  const event = createEvent.dragStart(grip, {
+    dataTransfer: { effectAllowed: '', setData: () => {}, setDragImage: () => {} },
+  })
+  Object.entries(pointer).forEach(([key, value]) =>
+    Object.defineProperty(event, key, { value }),
+  )
+  fireEvent(grip, event)
+  spy.mockRestore()
+}
+
+/** Point the column in flight at the gap on one side of a header cell. */
+const aimAtColumn = (th: HTMLElement, side: 'before' | 'after') =>
+  dragOverWithin(th, th, { left: 100, right: 200, width: 100 }, {
+    clientX: side === 'before' ? 120 : 180,
+  })
+
+/**
+ * The same for a row, aimed at a cell inside it. The component measures the
+ * row's first `<tr>` and never the `<tbody>`, which an open detail pane makes
+ * taller than the row it belongs to.
+ */
+const aimAtRow = (tbody: HTMLElement, side: 'before' | 'after') =>
+  dragOverWithin(
+    tbody.querySelector('td') as HTMLElement,
+    tbody.querySelector('tr') as HTMLElement,
+    { top: 100, bottom: 140, height: 40 },
+    { clientY: side === 'before' ? 110 : 130 },
+  )
+
 type User = ReturnType<typeof userEvent.setup>
 
 /* ---- the filter dock ---------------------------------------------- *
@@ -585,7 +656,7 @@ describe('selection', () => {
     expect(stat('Selected')).toBe('1')
   })
 
-  it('stands Export and Archive in the footer, immediately left of the pager', () => {
+  it('stands Export and the export strip in the footer, immediately left of the pager', () => {
     setup()
     const actions = document.querySelector('.dt-foot-actions') as HTMLElement
     expect(actions).not.toBeNull()
@@ -593,10 +664,16 @@ describe('selection', () => {
     expect(actions.closest('.dt-toolbar')).toBeNull()
     expect(actions.closest('.dt-foot')).not.toBeNull()
     expect(actions.nextElementSibling).toHaveClass('dt-pager')
-    expect(Array.from(actions.children).map((el) => el.textContent)).toEqual([
-      'Export',
-      'Archive',
+    // Archive is gone and its place belongs to the export now (DEV-22). The
+    // strip is in the DOM but shut — no `dt-open`, so no width — which is
+    // what leaves Export standing against the pager between exports.
+    expect(Array.from(actions.children).map((el) => el.className)).toEqual([
+      'dt-btn-secondary',
+      'dt-foot-export',
     ])
+    expect(Array.from(actions.children).map((el) => el.textContent)).toEqual(['Export', ''])
+    expect(actions.lastElementChild).not.toHaveClass('dt-open')
+    expect(actions.lastElementChild!.children).toHaveLength(0)
     // the pair is one group, so the footer's space-between still has two
     // children and a narrow footer wraps them together
     expect(actions.parentElement).toHaveClass('dt-foot-controls')
@@ -607,14 +684,13 @@ describe('selection', () => {
     ).toEqual(['dt-foot-count', 'dt-foot-controls'])
   })
 
-  it('enables Export and Archive only with a selection, and hands over the records', async () => {
-    const onExport = vi.fn()
-    const { user } = setup({ onExport })
+  it('enables Export only with something selected', async () => {
+    const { user } = setup()
     expect(screen.getByRole('button', { name: 'Export' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
     expect(screen.getByRole('button', { name: 'Export' })).toBeEnabled()
-    await user.click(screen.getByRole('button', { name: 'Export' }))
-    expect(onExport).toHaveBeenCalledWith([expect.objectContaining({ name: 'Tunc Yanik' })])
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    expect(screen.getByRole('button', { name: 'Export' })).toBeDisabled()
   })
 
   it('reports selection changes', async () => {
@@ -1197,33 +1273,105 @@ describe('html5 drag', () => {
     tbodyOf(name).querySelector('.dt-row-grip') as HTMLElement
   const colGrip = (key: string) => th(key).querySelector('.dt-grip') as HTMLElement
 
-  it('splices a row into the position it is dragged over, live', () => {
+  it('lands a row where it is dropped, and nowhere on the way there', () => {
     setup()
     const [first, second, third] = rowNames()
 
     fireEvent.dragStart(rowGrip(first), dataTransfer())
     expect(tbodyOf(first)).toHaveClass('dt-dragging')
 
-    fireEvent.dragEnter(tbodyOf(third).querySelector('td')!)
+    // crossing the third row moves nothing — a splice on the way past pulls
+    // the target out from under a pointer that has not moved, which is the
+    // flicker the drop marker replaces
+    aimAtRow(tbodyOf(third), 'after')
+    expect(rowNames().slice(0, 3)).toEqual([first, second, third])
+
+    fireEvent.drop(tbodyOf(third).querySelector('td')!)
     expect(rowNames().slice(0, 3)).toEqual([second, third, first])
+    expect(tbodyOf(first)).not.toHaveClass('dt-dragging')
 
     fireEvent.dragEnd(tbodyOf(first).querySelector('tr')!)
-    expect(tbodyOf(first)).not.toHaveClass('dt-dragging')
   })
 
-  it('splices a column into the position it is dragged over', () => {
+  it('lands a column where it is dropped, and nowhere on the way there', () => {
     setup()
 
     fireEvent.dragStart(colGrip('name'), dataTransfer())
     expect(th('name')).toHaveClass('dt-dragging')
 
-    fireEvent.dragEnter(th('solvedCases'))
+    aimAtColumn(th('solvedCases'), 'after')
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
+
+    fireEvent.drop(th('solvedCases'))
     expect(columnKeys()).toEqual([
       'date', 'status', 'solvedCases', 'name', 'favouriteSeason', 'address',
     ])
+    expect(th('name')).not.toHaveClass('dt-dragging')
 
     fireEvent.dragEnd(th('name'))
-    expect(th('name')).not.toHaveClass('dt-dragging')
+  })
+
+  it('takes the side of the cell the pointer is on', () => {
+    setup()
+
+    fireEvent.dragStart(colGrip('address'), dataTransfer())
+    aimAtColumn(th('date'), 'before')
+    fireEvent.drop(th('date'))
+    expect(columnKeys()).toEqual([
+      'name', 'address', 'date', 'status', 'solvedCases', 'favouriteSeason',
+    ])
+  })
+
+  /**
+   * A column's own two slots are no-ops, so the dead zone around it is about two
+   * columns wide — and the gesture starts at the grip, on its leading edge.
+   * Read on the cursor, leaving that zone leftwards costs half a neighbour and
+   * rightwards costs the whole of the dragged column and then half a neighbour,
+   * which is what "it takes two steps to go right" is. Reading from the middle
+   * of the dragged column takes the grab out of it: one place costs the
+   * distance between the two columns' centres, the same measure either way.
+   */
+  it('costs the same travel to move one place in either direction', () => {
+    setup()
+    const box = {
+      first: { left: 0, right: 200, width: 200 },
+      second: { left: 200, right: 400, width: 200 },
+      third: { left: 400, right: 600, width: 200 },
+    }
+
+    // `name`, taken 10px in. 199px of travel is not a move yet...
+    dragStartAt(colGrip('name'), th('name'), box.first, { clientX: 10 })
+    dragOverWithin(th('date'), th('date'), box.second, { clientX: 209 })
+    fireEvent.drop(th('date'))
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
+
+    // ...200px, one column, is. Read on the cursor this needed 290 — the rest
+    // of `name` and then half of `date`.
+    dragStartAt(colGrip('name'), th('name'), box.first, { clientX: 10 })
+    dragOverWithin(th('date'), th('date'), box.second, { clientX: 210 })
+    fireEvent.drop(th('date'))
+    expect(columnKeys()).toEqual([
+      'date', 'name', 'status', 'solvedCases', 'favouriteSeason', 'address',
+    ])
+
+    // and back: `status` taken 10px in at 410, landing on the same boundary at
+    // 209 — 201px, the same column's width approached from the other side
+    dragStartAt(colGrip('status'), th('status'), box.third, { clientX: 410 })
+    dragOverWithin(th('name'), th('name'), box.second, { clientX: 209 })
+    fireEvent.drop(th('name'))
+    expect(columnKeys()).toEqual([
+      'date', 'status', 'name', 'solvedCases', 'favouriteSeason', 'address',
+    ])
+  })
+
+  it('commits nothing when the drop lands where the marker never settled', () => {
+    setup()
+
+    fireEvent.dragStart(colGrip('name'), dataTransfer())
+    // straight to a drop, with no dragover to choose a slot
+    fireEvent.drop(th('address'))
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
+    expect(document.querySelectorAll('.dt-dragging')).toHaveLength(0)
   })
 
   it('a row drag clears the sort; a column drag does not', () => {
@@ -1234,13 +1382,15 @@ describe('html5 drag', () => {
     expect(sorted()).toHaveAttribute('aria-sort', 'ascending')
 
     fireEvent.dragStart(colGrip('date'), dataTransfer())
-    fireEvent.dragEnter(th('status'))
+    aimAtColumn(th('status'), 'after')
+    fireEvent.drop(th('status'))
     fireEvent.dragEnd(th('date'))
     expect(sorted()).toHaveAttribute('aria-sort', 'ascending')
 
     const [first, second] = rowNames()
     fireEvent.dragStart(rowGrip(first), dataTransfer())
-    fireEvent.dragEnter(tbodyOf(second).querySelector('td')!)
+    aimAtRow(tbodyOf(second), 'after')
+    fireEvent.drop(tbodyOf(second).querySelector('td')!)
     fireEvent.dragEnd(tbodyOf(first).querySelector('tr')!)
     expect(sorted()).toHaveAttribute('aria-sort', 'none')
   })
@@ -1336,17 +1486,17 @@ describe('the dock drop', () => {
     expect(columnKeys()).toEqual(DEFAULT_KEYS)
   })
 
-  it('undoes the reordering the drag did on its way up to the dock', () => {
+  it('leaves the header order alone on the way up to the dock', () => {
     setup()
     const dt = transfer()
 
     fireEvent.dragStart(colGrip('name'), { dataTransfer: dt })
-    // the trip out of the header crosses its neighbours, and every crossing
-    // moves the column one place along
-    fireEvent.dragEnter(th('status'))
-    expect(columnKeys()).toEqual([
-      'date', 'status', 'name', 'solvedCases', 'favouriteSeason', 'address',
-    ])
+    // The trip out of the header crosses its neighbours. That used to move the
+    // column one place along per crossing, and this handler had to put the
+    // pre-drag order back before adding the chip; now the crossing moves the
+    // drop marker and nothing else, so there is nothing to undo.
+    aimAtColumn(th('status'), 'after')
+    expect(columnKeys()).toEqual(DEFAULT_KEYS)
 
     fireEvent.drop(dock(), { dataTransfer: dt })
     fireEvent.dragEnd(th('name'))
@@ -1355,13 +1505,13 @@ describe('the dock drop', () => {
     expect(chip('Name')).toBeInTheDocument()
   })
 
-  it('that restore keeps the sort, the way every column move does', () => {
+  it('and leaves the sort alone with it', () => {
     setup()
     fireEvent.click(screen.getByRole('button', { name: 'Sort by Date' }))
     const dt = transfer()
 
     fireEvent.dragStart(colGrip('name'), { dataTransfer: dt })
-    fireEvent.dragEnter(th('status'))
+    aimAtColumn(th('status'), 'after')
     fireEvent.drop(dock(), { dataTransfer: dt })
     fireEvent.dragEnd(th('name'))
 
@@ -1369,6 +1519,26 @@ describe('the dock drop', () => {
       'aria-sort',
       'ascending',
     )
+  })
+
+  /**
+   * The drop lands on the dock, not on the table, so the table's own drop
+   * handler never runs and the marker would be left standing over the header.
+   * It comes down on the way out instead.
+   */
+  it('takes the drop marker down when the pointer leaves the table', () => {
+    setup()
+    const dt = transfer()
+    const marker = document.querySelector('.dt-drop-marker') as HTMLElement
+
+    fireEvent.dragStart(colGrip('name'), { dataTransfer: dt })
+    aimAtColumn(th('status'), 'after')
+    expect(marker.style.display).toBe('block')
+
+    const leaving = createEvent.dragLeave(th('status'))
+    Object.defineProperty(leaving, 'relatedTarget', { value: dock() })
+    fireEvent(th('status'), leaving)
+    expect(marker.style.display).toBe('none')
   })
 
   /**
@@ -1913,6 +2083,338 @@ describe('whole column', () => {
     expect(label('solvedCases')).not.toHaveAttribute('title')
     // the caret keeps its own job either way
     expect(screen.getByRole('button', { name: 'Sort by Solved cases' })).toBeInTheDocument()
+  })
+})
+
+/**
+ * PORT ADDITION (DEV-22): the Export button writes the file itself.
+ *
+ * Archive is gone and the slot it left holds the export's own strip — a bar
+ * that fills, and then the box that names what it built. The three selections
+ * the table can hold all feed the same button, and which one it takes is the
+ * narrowest one live: a whole column, else a rectangle, else the checkboxes.
+ */
+describe('CSV export', () => {
+  const cell = (row: number, col: number) =>
+    document.querySelector(`td[data-row="${row}"][data-col="${col}"]`) as HTMLElement
+  const label = (key: string) =>
+    document.querySelector(`th[data-key="${key}"] .dt-th-label`) as HTMLElement
+
+  const sweep = (from: HTMLElement, to: HTMLElement) => {
+    fireEvent.mouseDown(from)
+    fireEvent.mouseOver(to)
+    fireEvent.mouseUp(document)
+  }
+
+  const exportButton = () => screen.getByRole('button', { name: 'Export' })
+  const bar = () => document.querySelector('.dt-export-bar')
+  const nameBox = () =>
+    screen.queryByLabelText('Name the exported CSV file') as HTMLInputElement | null
+
+  /**
+   * The bar takes 900ms of real time to fill, which is short enough to wait out
+   * and a great deal less trouble than driving `userEvent` off fake timers.
+   */
+  const untilNamed = async () => {
+    await waitFor(() => expect(nameBox()).not.toBeNull(), { timeout: 3000 })
+    return nameBox() as HTMLInputElement
+  }
+
+  /** jsdom's Blob has no `text()`; FileReader is the route it does implement. */
+  const readBlob = (blob: Blob) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsText(blob)
+    })
+
+  /**
+   * jsdom implements neither `URL.createObjectURL` nor a navigating `click`, so
+   * both are stood up here — and both are what the assertions read: the Blob
+   * for the bytes, the anchor's `download` for the name.
+   */
+  const harness = () => {
+    const blobs: Blob[] = []
+    const names: string[] = []
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (blob: Blob) => {
+        blobs.push(blob)
+        return 'blob:dt-test'
+      },
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: () => {},
+    })
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        names.push(this.download)
+      })
+    return {
+      names,
+      count: () => blobs.length,
+      // the BOM is for Excel, not for the assertions
+      text: async () =>
+        (await readBlob(blobs[blobs.length - 1])).replace(/^\uFEFF/, ''),
+      restore: () => click.mockRestore(),
+    }
+  }
+
+  const HEADER = 'Name,Date,Status,Solved cases,Favourite season,Address'
+  /**
+   * Written out here rather than imported from csv.ts, so the expectations are
+   * not the implementation restated. Every date in the demo set reads
+   * "19 August, 2026" and so goes out quoted — which is the point of spelling
+   * the rule out in a flow test at all.
+   */
+  const quoted = (value: string) => (value.includes(',') ? `"${value}"` : value)
+  const asRow = (r: DataTableRecord) =>
+    [r.name, r.date, r.status, r.solvedCases, r.favouriteSeason, r.address]
+      .map(quoted)
+      .join(',')
+
+  it('opens the bar out of the pager, then turns it into a name box', async () => {
+    const io = harness()
+    const { user } = setup()
+    const strip = document.querySelector('.dt-foot-export') as HTMLElement
+    // shut, so Export is against the pager
+    expect(strip).not.toHaveClass('dt-open')
+
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+
+    // the strip is what opens — the bar is its whole width, and the width is
+    // the progress, so Export is walked left as it fills
+    expect(strip).toHaveClass('dt-open')
+    expect(bar()).not.toBeNull()
+    expect(bar()!.parentElement).toBe(strip)
+    expect(bar()).toHaveAttribute('role', 'progressbar')
+    expect(Number(bar()!.getAttribute('aria-valuenow'))).toBeLessThan(100)
+
+    const box = await untilNamed()
+    // the bar became the box: one strip, one child, never both at once
+    expect(bar()).toBeNull()
+    expect(strip).toHaveClass('dt-open')
+    expect(strip.children).toHaveLength(1)
+    expect(box.value).toBe('data-table-1-record')
+    expect(box).toHaveFocus()
+    // and the suggestion is selected, so typing replaces it
+    expect(box.selectionStart).toBe(0)
+    expect(box.selectionEnd).toBe(box.value.length)
+    expect(document.querySelector('.dt-export-ext')).toHaveTextContent('.csv')
+    io.restore()
+  })
+
+  it('writes the checked rows, every column, under a header row', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    await untilNamed()
+    await user.click(screen.getByRole('button', { name: 'Save data-table-1-record.csv' }))
+
+    expect(io.names).toEqual(['data-table-1-record.csv'])
+    expect(await io.text()).toBe([HEADER, asRow(createDemoRecords()[0])].join('\r\n'))
+    // the strip is shut again — with motion off there is no slide to sit
+    // through — so Export is back against the pager and pressable
+    const strip = document.querySelector('.dt-foot-export') as HTMLElement
+    expect(strip.children).toHaveLength(0)
+    expect(strip).not.toHaveClass('dt-open', 'dt-closing')
+    expect(exportButton()).toBeEnabled()
+    io.restore()
+  })
+
+  it('slides the strip back out on the save rather than snapping it shut', async () => {
+    const io = harness()
+    const user = userEvent.setup()
+    render(<DataTable motion="always" />)
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    await untilNamed()
+    await user.keyboard('{Enter}')
+
+    // the file is already written; what is left is the bar showing itself out,
+    // carrying Export back to the pager with it
+    const strip = document.querySelector('.dt-foot-export') as HTMLElement
+    expect(io.names).toEqual(['data-table-1-record.csv'])
+    expect(strip).toHaveClass('dt-closing')
+    expect(strip).not.toHaveClass('dt-open')
+    expect(strip.querySelector('.dt-export-bar')).not.toBeNull()
+    // and it is not a state anything can be done to: no name box, no progress
+    expect(nameBox()).toBeNull()
+    expect(strip.querySelector('[role="progressbar"]')).toBeNull()
+
+    await waitFor(() => expect(strip.children).toHaveLength(0))
+    expect(strip).not.toHaveClass('dt-closing')
+    expect(exportButton()).toBeEnabled()
+    io.restore()
+  })
+
+  it('saves under the typed name, with exactly one .csv on it', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    const box = await untilNamed()
+
+    await user.clear(box)
+    await user.type(box, 'Q3 report.csv')
+    // Enter is the whole gesture — no reaching for the tick
+    await user.keyboard('{Enter}')
+    expect(io.names).toEqual(['Q3 report.csv'])
+    io.restore()
+  })
+
+  it('takes the selected cells over the checked rows when both are live', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    // name + date, over the first three rows
+    sweep(cell(0, 0), cell(2, 1))
+
+    await user.click(exportButton())
+    const box = await untilNamed()
+    expect(box.value).toBe('data-table-cells')
+
+    await user.keyboard('{Enter}')
+    const rows = createDemoRecords().slice(0, 3)
+    expect(await io.text()).toBe(
+      ['Name,Date', ...rows.map((r) => `${r.name},${quoted(r.date)}`)].join('\r\n'),
+    )
+    expect(io.names).toEqual(['data-table-cells.csv'])
+    io.restore()
+  })
+
+  it('takes a whole column across every page, not just the eight on screen', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.tripleClick(label('solvedCases'))
+
+    await user.click(exportButton())
+    const box = await untilNamed()
+    expect(box.value).toBe('data-table-solved-cases')
+
+    await user.keyboard('{Enter}')
+    const all = createDemoRecords()
+    expect(all).toHaveLength(17)
+    expect(await io.text()).toBe(
+      ['Solved cases', ...all.map((r) => r.solvedCases)].join('\r\n'),
+    )
+    io.restore()
+  })
+
+  it('exports what was selected at the press, not what is selected at the save', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    // the bar is still filling; tick another row under it
+    await user.click(screen.getByRole('button', { name: 'Select Ethan Noah' }))
+
+    await untilNamed()
+    await user.keyboard('{Enter}')
+    expect(await io.text()).toBe([HEADER, asRow(createDemoRecords()[0])].join('\r\n'))
+    io.restore()
+  })
+
+  it('reports the export through onExport at the save, not at the press', async () => {
+    const io = harness()
+    const onExport = vi.fn()
+    const { user } = setup({ onExport })
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    expect(onExport).not.toHaveBeenCalled()
+
+    await untilNamed()
+    await user.keyboard('{Enter}')
+    expect(onExport).toHaveBeenCalledWith([expect.objectContaining({ name: 'Tunc Yanik' })])
+    io.restore()
+  })
+
+  it('will not start a second export over the first', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    expect(exportButton()).toBeDisabled()
+    await untilNamed()
+    expect(exportButton()).toBeDisabled()
+    io.restore()
+  })
+
+  it('offers a cancel beside the save, and writes nothing when it is pressed', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    await untilNamed()
+
+    // save then discard, in the draft row's order
+    const box = document.querySelector('.dt-export-name') as HTMLElement
+    expect(
+      Array.from(box.querySelectorAll('button')).map((b) => b.getAttribute('aria-label')),
+    ).toEqual(['Save data-table-1-record.csv', 'Cancel the export'])
+
+    await user.click(screen.getByRole('button', { name: 'Cancel the export' }))
+    expect(nameBox()).toBeNull()
+    expect(io.count()).toBe(0)
+    expect(document.querySelector('[role="status"]')).toHaveTextContent('Export cancelled.')
+    // the selection it was about is untouched, so it can simply be pressed again
+    expect(stat('Selected')).toBe('1')
+    expect(exportButton()).toBeEnabled()
+    io.restore()
+  })
+
+  it('drops the whole thing on Escape, without writing a file', async () => {
+    const io = harness()
+    const { user } = setup()
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    const box = await untilNamed()
+
+    await user.type(box, '{Escape}')
+    expect(nameBox()).toBeNull()
+    expect(io.count()).toBe(0)
+    // Escape reached the export and stopped there — the row is still checked
+    expect(stat('Selected')).toBe('1')
+    expect(exportButton()).toBeEnabled()
+    io.restore()
+  })
+
+  it('leaves the cell selection standing behind the name box', async () => {
+    const io = harness()
+    const { user } = setup()
+    sweep(cell(0, 0), cell(1, 0))
+    await user.click(exportButton())
+    await untilNamed()
+    // pressing Export is not a click in the grid, so the rectangle it is about
+    // is still painted while the box asks for a name
+    expect(document.querySelectorAll('td.dt-range')).toHaveLength(2)
+    io.restore()
+  })
+
+  it('says what it is doing at each step', async () => {
+    const io = harness()
+    const { user } = setup()
+    const live = () => document.querySelector('[role="status"]')!.textContent
+    await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
+    await user.click(exportButton())
+    expect(live()).toBe('Preparing 6 cells for export.')
+
+    await untilNamed()
+    // the box is mounted a commit before the effect that announces it
+    await waitFor(() =>
+      expect(live()).toBe('Export ready. Name the file and press Enter to save it.'),
+    )
+
+    await user.keyboard('{Enter}')
+    expect(live()).toBe('Saved data-table-1-record.csv.')
+    io.restore()
   })
 })
 
@@ -2792,7 +3294,7 @@ describe('regressions', () => {
       screen.getByText(name, { selector: '.dt-name-text' }).closest('tbody') as HTMLElement
 
     // descending puts a record from the back of the list at the top; reordering
-    // clears the sort, so that record leaves the page mid-drag
+    // clears the sort, so that record leaves the page on the drop
     fireEvent.click(screen.getByRole('button', { name: 'Sort by Name' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sort by Name' }))
     const [source] = rowNames()
@@ -2800,7 +3302,8 @@ describe('regressions', () => {
 
     const sourceGrip = tbodyOf(source).querySelector('.dt-row-grip') as HTMLElement
     fireEvent.dragStart(sourceGrip, { dataTransfer: { effectAllowed: '', setData: () => {} } })
-    fireEvent.dragEnter(tbodyOf(last).querySelector('td')!)
+    aimAtRow(tbodyOf(last), 'after')
+    fireEvent.drop(tbodyOf(last).querySelector('td')!)
     expect(rowNames()).not.toContain(source)
 
     // the browser still fires dragend, but at the node React has detached; it
@@ -2809,7 +3312,9 @@ describe('regressions', () => {
 
     const callsBefore = onRecordsChange.mock.calls.length
     const stillHere = rowNames()
-    fireEvent.dragEnter(tbodyOf(stillHere[3]).querySelector('td')!)
+    const stray = tbodyOf(stillHere[3])
+    aimAtRow(stray, 'after')
+    fireEvent.drop(stray.querySelector('td')!)
     expect(onRecordsChange.mock.calls).toHaveLength(callsBefore)
     expect(rowNames()).toEqual(stillHere)
   })

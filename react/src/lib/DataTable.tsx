@@ -37,6 +37,14 @@ import {
   type CellRef,
   type RangeRect,
 } from './cellRange'
+import {
+  csvFileName,
+  defaultExportName,
+  downloadCsv,
+  planCsv,
+  planSize,
+  type ExportPlan,
+} from './csv'
 import { DetailPane } from './DetailPane'
 import { COLUMN_DRAG_MIME, FilterDock } from './FilterDock'
 import { COLUMN_TYPES, ENUM_OPTIONS, matchesAll } from './filters'
@@ -63,7 +71,7 @@ import {
 import { ALP_LOGO_DATA_URI } from './logo'
 import { createDemoRecords } from './demoData'
 import { DRAFT_ID, initialState, reducer, type TableAction } from './state'
-import { useFlipReorder } from './useFlipReorder'
+import { useFlipReorder, type FlipAxis } from './useFlipReorder'
 import { useMotionEnabled } from './useMotion'
 import {
   COLUMN_LABELS,
@@ -107,6 +115,60 @@ const ANIMATION_FALLBACK_MS = 400
 const SUM_FADE_MS = 160
 
 /**
+ * PORT ADDITION: how long the export bar takes to open, and in how many steps.
+ *
+ * The file is built synchronously — the whole of it is already in memory before
+ * the bar draws its first frame — so this is not the export taking time. It is
+ * the two beats the flow needs to be readable: the press has to land as
+ * *something happening*, and the name box that follows has to arrive as the
+ * next step of that thing rather than as a box that appeared out of nowhere
+ * under the pointer. 480ms buys both and asks for no patience; a real export
+ * (a server round trip) would drive the same bar off its own progress and this
+ * constant would go.
+ *
+ * The step count is unchanged at twelve — what shortened is the tick. Fewer,
+ * longer steps would have made the sweep visibly hop; twelve at 40ms is one
+ * step per two-and-a-bit frames, which still reads as travel.
+ *
+ * Kept as steps rather than a duration and an easing because the bar reports a
+ * number to assistive tech (`aria-valuenow`) as well as painting one, and a
+ * step count is the honest unit for both. What the step drives is the bar's
+ * *width* — see `.dt-foot-export` in the stylesheet — so the two are one fact
+ * rather than a number kept in step with a picture of it.
+ */
+const EXPORT_STEPS = 12
+const EXPORT_TICK_MS = 40
+
+/** The strip's slide back out. The menus' duration (V-17), on the pane's curve. */
+const EXPORT_CLOSE_MS = 140
+
+/**
+ * The export between the press and the save.
+ *
+ * The file is snapshotted at the press, not read back at the save: the bar
+ * takes the best part of a second to open and nothing stops the user checking
+ * another row while it does. What Export exports is what was selected when
+ * Export was pressed.
+ */
+interface ExportRun {
+  /**
+   * `working` opens the bar, `naming` draws the box it becomes, `closing` is
+   * the bar again on its way back out — the last of the three keeps something
+   * in the strip for the 180ms it takes to collapse, the way `fadingReading`
+   * keeps the last answer on screen for the length of its fade.
+   */
+  phase: 'working' | 'naming' | 'closing'
+  /** 0 to `EXPORT_STEPS`. */
+  step: number
+  /** The finished file, header row and all. */
+  csv: string
+  /** The records that went into it, for `onExport`. */
+  records: DataTableRecord[]
+  /** What the name box holds — seeded from the plan, the user's from then on. */
+  name: string
+}
+
+/**
  * The flow block's answer, plus the one thing about it that cannot be read off
  * a `MetricResult`: whether it was taken over every page or only over this one.
  * The flag travels *with* the answer rather than beside it so that the fading
@@ -145,11 +207,28 @@ function compareCells(a: string, b: string): number {
  * what dragging produced while the `<tr>` itself was the source — held at the
  * point the pointer grabbed it. jsdom has no `setDragImage`, hence the guard.
  */
-function dragImage(event: DragEvent<HTMLElement>, source: HTMLElement | null) {
+/** Where along `axis` the pointer took hold, and how big the element is. */
+type Grab = { offset: number; size: number }
+
+/**
+ * Hand the drag its ghost — the row or header itself, anchored so the cursor
+ * keeps the exact point of it that was taken hold of, and the drag looks the
+ * way that element did when it was the source (DEV-10) — and report that grab
+ * back along `axis`, because it is what the slot test has to be corrected by.
+ * Null when the browser gave us no `setDragImage` to anchor.
+ */
+function dragImage(
+  event: DragEvent<HTMLElement>,
+  source: HTMLElement | null,
+  axis: FlipAxis,
+): Grab | null {
   const { dataTransfer } = event
-  if (!source || typeof dataTransfer?.setDragImage !== 'function') return
+  if (!source || typeof dataTransfer?.setDragImage !== 'function') return null
   const box = source.getBoundingClientRect()
   dataTransfer.setDragImage(source, event.clientX - box.left, event.clientY - box.top)
+  return axis === 'X'
+    ? { offset: event.clientX - box.left, size: box.width }
+    : { offset: event.clientY - box.top, size: box.height }
 }
 
 /* ------------------------------------------------------------------ *
@@ -667,7 +746,6 @@ export function DataTable(props: DataTableProps) {
     motion: motionPreference = 'auto',
     cellSelection = true,
     onExport,
-    onArchive,
     onSelectionChange,
     onEditRecord,
     className,
@@ -699,6 +777,10 @@ export function DataTable(props: DataTableProps) {
 
   const rootRef = useRef<HTMLDivElement | null>(null)
   const tableRef = useRef<HTMLTableElement | null>(null)
+  // The drop marker is positioned against the scroll container rather than the
+  // table, so it stays put while the table scrolls under a horizontal drag.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const markerRef = useRef<HTMLDivElement | null>(null)
 
   const motion = useMotionEnabled(motionPreference)
   const flip = useFlipReorder(tableRef, motion)
@@ -711,16 +793,40 @@ export function DataTable(props: DataTableProps) {
     { kind: 'row'; id: string } | { kind: 'col'; id: ColumnKey } | null
   >(null)
   const [announcement, setAnnouncement] = useState('')
+  /** PORT ADDITION: the export in flight — the bar, then the name box. */
+  const [exporting, setExporting] = useState<ExportRun | null>(null)
+  const exportNameRef = useRef<HTMLInputElement | null>(null)
+  const exportCloseTimer = useRef<number | undefined>(undefined)
 
   // Held off state as well, so a drag never depends on a commit having landed.
   const dragRowRef = useRef<string | null>(null)
   const dragColRef = useRef<ColumnKey | null>(null)
   /**
-   * The column order as it stood when a column drag began. A drag that travels
-   * up to the filter dock passes over its neighbours on the way and reorders the
-   * header as it goes; the dock is additive, so the drop puts this back.
+   * Where the drop would land: how many columns (or rows) would stand before
+   * the dragged one. `null` while the pointer is somewhere a drop would mean
+   * nothing. Off state for the same reason as the two above — it changes with
+   * the pointer, and the one element it moves can be moved without a commit.
    */
-  const preDragCols = useRef<ColumnKey[] | null>(null)
+  const dropAt = useRef<number | null>(null)
+  /**
+   * The grab `dragImage` reported, and the reason the slot test is not run on
+   * the cursor.
+   *
+   * A column's own two slots are no-ops, so the dead zone around it runs from
+   * the previous neighbour's midpoint to the next one's — about two columns
+   * wide. Where in that zone the gesture *starts* is where the grip is, and the
+   * grips sit at the leading edge of their cell. Read on the cursor, escaping
+   * the zone leftwards costs half a neighbour; escaping it rightwards costs the
+   * whole of the dragged column first and then half a neighbour — two and a bit
+   * times as far, and felt as having to drag across two columns to move past
+   * one. Against the 313px last column it cost 316px, further than the column
+   * had left to give, so the second-to-last column read as immovable.
+   *
+   * Correcting the reading to the middle of the dragged element takes the grab
+   * out of it: a move of one place then costs the distance between the two
+   * columns' centres, which is the same measure in both directions.
+   */
+  const grab = useRef<Grab | null>(null)
 
   // Same reasoning for the cell-range drag: the pointer moves faster than the
   // commits, and the gesture must not depend on one having landed. `live` is
@@ -943,47 +1049,138 @@ export function DataTable(props: DataTableProps) {
     [state.cols, flip],
   )
 
-  /* ---- drag: rows and columns share one handler set ---------------- */
+  /* ---- drag: rows and columns share one handler set ---------------- *
+   * The reorder is committed on the drop, not on the way past.
+   *
+   * Splicing on `dragenter` fed itself: the move pulled the target out from
+   * under a pointer that had not moved, the pointer landed inside a different
+   * column, and that fired the next `dragenter`, which moved it back. A cursor
+   * resting anywhere near a boundary made the header flicker — and the FLIP
+   * slide, which is 200ms of the `<th>`s travelling under a stationary pointer,
+   * kept the events coming on its own.
+   *
+   * So nothing in the table moves until the drop. What moves is a single 2px
+   * rule that snaps to the boundary the dragged column or row would land on,
+   * chosen by a midpoint test against the cell under the pointer: one
+   * unambiguous answer per pointer position, and the marker steps a whole slot
+   * at a time or not at all. The move that follows the drop is the only one,
+   * and it gets the same FLIP every other reorder does.
+   * ------------------------------------------------------------------ */
+
+  const hideMarker = useCallback(() => {
+    dropAt.current = null
+    const marker = markerRef.current
+    if (marker) marker.style.display = 'none'
+  }, [])
+
+  /**
+   * Draw the rule across `edge` — a client-space x for a column, y for a row.
+   * The marker is absolutely positioned inside the scroll container, so the
+   * coordinate comes back into that container's content space and then scrolls
+   * with the table for free. The 1px offset straddles the rule over the
+   * boundary instead of hanging it off one side.
+   *
+   * On the frame it appears the slide is suppressed: the marker is coming from
+   * wherever the last drag left it, and that is not a journey worth animating.
+   */
+  const placeMarker = useCallback((axis: FlipAxis, edge: number) => {
+    const marker = markerRef.current
+    const scroll = scrollRef.current
+    const table = tableRef.current
+    if (!marker || !scroll || !table) return
+
+    const appearing = marker.style.display !== 'block'
+    if (appearing) marker.style.transition = 'none'
+
+    const box = scroll.getBoundingClientRect()
+    if (axis === 'X') {
+      marker.style.left = `${edge - box.left + scroll.scrollLeft - 1}px`
+      marker.style.top = '0px'
+      marker.style.width = '2px'
+      marker.style.height = `${table.offsetHeight}px`
+    } else {
+      marker.style.left = '0px'
+      marker.style.top = `${edge - box.top + scroll.scrollTop - 1}px`
+      marker.style.width = `${table.offsetWidth}px`
+      marker.style.height = '2px'
+    }
+
+    marker.style.display = 'block'
+    if (appearing) {
+      void marker.offsetHeight // flush before the transition goes back on
+      marker.style.transition = ''
+    }
+  }, [])
+
+  /** The x of the boundary an insertion at `index` would open. */
+  const columnEdge = (index: number) => {
+    const table = tableRef.current
+    if (!table) return null
+    const past = index >= state.cols.length
+    const key = state.cols[past ? state.cols.length - 1 : index]
+    const th = table.querySelector<HTMLElement>(`th[data-key="${key}"]`)
+    if (!th) return null
+    const rect = th.getBoundingClientRect()
+    return past ? rect.right : rect.left
+  }
+
+  /**
+   * The same for rows, but measured across the whole `<tbody>`: an expanded
+   * row's detail pane travels with it, so the line that means "after this row"
+   * belongs under the pane, not between the row and its own detail.
+   */
+  const rowEdge = (index: number) => {
+    const table = tableRef.current
+    if (!table) return null
+    const past = index >= visible.length
+    const record = visible[past ? visible.length - 1 : index]
+    if (!record) return null
+    const bodies = Array.from(table.querySelectorAll<HTMLElement>('tbody[data-id]'))
+    const tbody = bodies.find((el) => el.dataset.id === record.id)
+    if (!tbody) return null
+    const rect = tbody.getBoundingClientRect()
+    return past ? rect.bottom : rect.top
+  }
+
+  /**
+   * The cursor, moved to the middle of what is being dragged. That is the point
+   * a slot is chosen against: the pointer holds the element wherever the grip
+   * happened to be, and a reading taken there charges the gesture for the part
+   * of its own column it still has to cross. Falls back to the cursor when
+   * there is no ghost whose position we could predict.
+   */
+  const fromMiddle = (client: number) => {
+    const held = grab.current
+    return held ? client - held.offset + held.size / 2 : client
+  }
+
+  /** Idempotent: `dragover` fires far faster than the slot can change. */
+  const markDrop = (axis: FlipAxis, index: number) => {
+    if (dropAt.current === index) return
+    const edge = axis === 'X' ? columnEdge(index) : rowEdge(index)
+    if (edge === null) return
+    dropAt.current = index
+    placeMarker(axis, edge)
+  }
 
   const endDrag = useCallback(() => {
     dragRowRef.current = null
     dragColRef.current = null
-    // The capture belongs to the drag that took it, and `dragend` fires after
-    // `drop`, so onDropColumn has already spent it by the time this runs. Left
-    // set, a drag that ended anywhere else would still be sitting here when a
-    // *foreign* column — one from another instance of this table, resolved off
-    // the dataTransfer rather than from our own dragstart — lands on the dock,
-    // and the drop would "restore" an order the user set minutes ago.
-    preDragCols.current = null
+    grab.current = null
+    hideMarker()
     setDrag(null)
-  }, [])
+  }, [hideMarker])
 
   /**
-   * A column dropped on the filter dock.
-   *
-   * The drop is additive: the column stays in the table. But the drag had to
-   * cross the header to get out of it, and every `dragenter` on a neighbouring
-   * `<th>` moved the column one place along — so the order the pointer left
-   * behind is not the order the user asked for. Put the pre-drag order back
-   * first — verbatim and sort intact, which is what `setColumnOrder` is for —
-   * then add the chip.
+   * A column dropped on the filter dock. Purely additive now: the column stays
+   * in the table and the header order is untouched, because the trip up to the
+   * dock no longer moves anything on its way past. (It used to reorder the
+   * header as it crossed each neighbour, and this handler had to put the
+   * pre-drag order back before adding the chip.)
    */
-  const onDropColumn = useCallback(
-    (key: ColumnKey) => {
-      const before = preDragCols.current
-      preDragCols.current = null
-      // The same FLIP every other column move gets, and for the same reason: the
-      // columns slide back rather than snapping, so the undo is legible as an
-      // undo. Guarded on the order really having changed, which is the rule
-      // `snapshot` asks its callers to keep (useFlipReorder.ts).
-      if (before && before.join() !== state.cols.join()) {
-        flip('X')
-        dispatch({ type: 'setColumnOrder', cols: before })
-      }
-      dispatch({ type: 'addCondition', key })
-    },
-    [flip, state.cols],
-  )
+  const onDropColumn = useCallback((key: ColumnKey) => {
+    dispatch({ type: 'addCondition', key })
+  }, [])
 
   /**
    * The row and column grips (`⠿`) are the only drag sources — the prototype
@@ -1027,9 +1224,7 @@ export function DataTable(props: DataTableProps) {
       // the dock is a copy — the column stays in the table. A dropEffect the
       // effectAllowed does not cover is reset to "none" and the drop is refused.
       event.dataTransfer.effectAllowed = 'copyMove'
-      // The order to restore if this drag ends in the dock; see onDropColumn.
-      preDragCols.current = state.cols
-      dragImage(event, th)
+      grab.current = dragImage(event, th, 'X')
       return
     }
 
@@ -1038,27 +1233,107 @@ export function DataTable(props: DataTableProps) {
       dragRowRef.current = tbody.dataset.id as string
       setDrag({ kind: 'row', id: tbody.dataset.id as string })
       event.dataTransfer.effectAllowed = 'move'
-      dragImage(event, tbody.querySelector('tr'))
+      // Near enough a no-op on this axis, the row grip being vertically centred
+      // — but it is the same rule, and it earns its keep on a tall row taken by
+      // its top or bottom edge.
+      grab.current = dragImage(event, tbody.querySelector('tr'), 'Y')
     }
   }
 
-  const onDragEnter = (event: DragEvent<HTMLTableElement>) => {
+  /**
+   * `dragover`, not `dragenter`: it keeps firing while the pointer travels
+   * inside a single cell, which is where the midpoint gets crossed.
+   * preventDefault is also what makes the table a drop target at all — without
+   * it no `drop` ever arrives and the gesture commits nothing.
+   */
+  const onDragOver = (event: DragEvent<HTMLTableElement>) => {
+    const column = dragColRef.current
+    const row = dragRowRef.current
+    if (!column && !row) return
+    event.preventDefault()
+
     const target = event.target as HTMLElement
     if (!target.closest) return
 
-    if (dragColRef.current) {
-      const th = target.closest('th[data-key]') as HTMLElement | null
-      if (th) moveColumn(dragColRef.current, th.dataset.key as ColumnKey)
+    if (column) {
+      // `data-key` is on the header cell and on every body cell beneath it, so
+      // a column can be aimed from anywhere in the table rather than only along
+      // the header strip — which is a long way to travel on a tall table.
+      const cell = target.closest('[data-key]') as HTMLElement | null
+      if (cell) {
+        const at = state.cols.indexOf(cell.dataset.key as ColumnKey)
+        if (at < 0) return
+        const rect = cell.getBoundingClientRect()
+        markDrop('X', at + (fromMiddle(event.clientX) >= rect.left + rect.width / 2 ? 1 : 0))
+      } else if (target.closest('.dt-col-logo, .dt-col-check, .dt-cell-grip, .dt-cell-check')) {
+        // The fixed columns at either end are not slots of their own; they
+        // clamp to the ends of the run the user is allowed to reorder.
+        markDrop('X', 0)
+      } else if (target.closest('.dt-col-action, .dt-cell-action')) {
+        markDrop('X', state.cols.length)
+      }
+      // Anything else — an open detail pane, the strip under the last row —
+      // leaves the marker where it is rather than snapping it somewhere the
+      // pointer is not pointing.
       return
     }
-    if (dragRowRef.current) {
-      const tbody = target.closest('tbody[data-id]') as HTMLElement | null
-      if (tbody) moveRow(dragRowRef.current, tbody.dataset.id as string)
-    }
+
+    const tbody = target.closest('tbody[data-id]') as HTMLElement | null
+    if (!tbody || tbody.dataset.id === DRAFT_ID) return
+    const at = visible.findIndex((r) => r.id === tbody.dataset.id)
+    if (at < 0) return
+    // Measured on the first `<tr>` rather than the tbody: an open detail pane
+    // would drag the midpoint down below the row it belongs to, and every
+    // pointer position over that row would then read as "after".
+    const first = tbody.querySelector('tr')
+    if (!first) return
+    const rect = first.getBoundingClientRect()
+    markDrop('Y', at + (fromMiddle(event.clientY) >= rect.top + rect.height / 2 ? 1 : 0))
   }
 
-  const onDragOver = (event: DragEvent<HTMLTableElement>) => {
-    if (dragRowRef.current || dragColRef.current) event.preventDefault()
+  /**
+   * The pointer has left the table — for the filter dock, most likely, which is
+   * where a column drag goes when it is not a reorder. Take the marker down.
+   * `dragleave` fires again for every child crossed on the way out, so only a
+   * relatedTarget outside the table is a real exit.
+   */
+  const onDragLeave = (event: DragEvent<HTMLTableElement>) => {
+    if (!dragColRef.current && !dragRowRef.current) return
+    const to = event.relatedTarget as Node | null
+    if (to && event.currentTarget.contains(to)) return
+    hideMarker()
+  }
+
+  /**
+   * The one reorder the gesture makes. `moveColumn` and `moveRow` take the
+   * neighbour to land on rather than a slot number, so the insertion index is
+   * converted here: a drop to the right of (or below) where the item started
+   * lands on whatever is standing in that slot now, one place back.
+   *
+   * `dropAt` is read before `endDrag` clears it. A drag that ends anywhere the
+   * marker never settled — the toolbar, off the window — commits nothing,
+   * which is the cancel the old dragenter reorder had no way to offer.
+   */
+  const onDrop = (event: DragEvent<HTMLTableElement>) => {
+    const index = dropAt.current
+    const column = dragColRef.current
+    const row = dragRowRef.current
+    endDrag()
+    if (index === null) return
+
+    if (column) {
+      event.preventDefault()
+      const from = state.cols.indexOf(column)
+      const to = state.cols[index > from ? index - 1 : index]
+      if (from >= 0 && to) moveColumn(column, to)
+      return
+    }
+    if (row) {
+      event.preventDefault()
+      const from = visible.findIndex((r) => r.id === row)
+      const to = visible[index > from ? index - 1 : index]
+      if (from >= 0 && to) moveRow(row, to.id)
+    }
   }
 
   /* ---- keyboard reordering (the prototype has none) ---------------- */
@@ -1508,6 +1783,145 @@ export function DataTable(props: DataTableProps) {
     return () => document.removeEventListener('mousedown', onMouseDown, true)
   })
 
+  /* ---- export (PORT ADDITION) --------------------------------------- *
+   * Press Export, watch the bar open out of the pager and walk Export left,
+   * name the file in the box the bar turns into, save. One object doing three
+   * things in one place, and the object's *width* is what the flow is made of:
+   * zero between exports (so Export sits against the pager), the step's share
+   * of `--dt-export-w` while it fills, the whole of it for the name box, and
+   * back to zero on the way out. The turn from bar to box is a wipe rather
+   * than a cut, and it is pure CSS — `.dt-export-name::after` in the
+   * stylesheet, which is also where the widths live.
+   * ------------------------------------------------------------------- */
+
+  const selectedRecords = () => records.filter((r) => state.selected[r.id])
+
+  /**
+   * What Export would export right now, or `null` if it would export nothing.
+   *
+   * The order is the order of specificity, not of importance. A cell selection
+   * is an explicit "these cells" and answers the question on its own; the
+   * checkboxes are the fallback, and the one that means whole records. The two
+   * can be live at once (see the header of cellRange.ts) and the button cannot
+   * ask which was meant, so the narrower one wins — a user who dragged across
+   * four cells after ticking a row is looking at the four cells.
+   */
+  const exportPlan = (): ExportPlan | null => {
+    // Every page of it, which is the reason the column was taken at all.
+    if (wholeColumnRect) {
+      return {
+        source: 'column',
+        columns: [state.cols[wholeColumnRect.left]],
+        records: filtered,
+      }
+    }
+    if (rangeBox) {
+      return {
+        source: 'cells',
+        columns: state.cols.slice(rangeBox.left, rangeBox.right + 1),
+        records: visible.slice(rangeBox.top, rangeBox.bottom + 1),
+      }
+    }
+    const rows = selectedRecords()
+    return rows.length ? { source: 'rows', columns: state.cols, records: rows } : null
+  }
+
+  const canExport = !exporting && (selectedCount > 0 || !!rangeBox || !!wholeColumnRect)
+
+  const startExport = () => {
+    const plan = exportPlan()
+    if (!plan) return
+    const cells = planSize(plan)
+    setExporting({
+      phase: 'working',
+      step: 0,
+      csv: planCsv(plan),
+      records: plan.records,
+      name: defaultExportName(plan, title),
+    })
+    announce(`Preparing ${cells} cell${cells === 1 ? '' : 's'} for export.`)
+  }
+
+  /**
+   * Put the strip away. With motion on that is a 180ms slide back to zero
+   * width, Export riding it home — so the run stays in state, on `closing`,
+   * until the slide is over. With motion off it is gone on the spot; the
+   * closing phase exists only to have something to animate.
+   */
+  const endExport = () => {
+    window.clearTimeout(exportCloseTimer.current)
+    if (!motion) {
+      setExporting(null)
+      return
+    }
+    setExporting((run) => (run ? { ...run, phase: 'closing' } : null))
+    exportCloseTimer.current = window.setTimeout(
+      // Guarded: a run started while this one was still sliding out is not
+      // this timer's to clear.
+      () => setExporting((run) => (run?.phase === 'closing' ? null : run)),
+      EXPORT_CLOSE_MS,
+    )
+  }
+
+  const saveExport = () => {
+    if (exporting?.phase !== 'naming') return
+    const filename = csvFileName(exporting.name)
+    const ok = downloadCsv(filename, exporting.csv)
+    endExport()
+    if (ok) onExport?.(exporting.records)
+    announce(ok ? `Saved ${filename}.` : 'The browser refused the download.')
+  }
+
+  const cancelExport = () => {
+    if (!exporting || exporting.phase === 'closing') return
+    endExport()
+    announce('Export cancelled.')
+  }
+
+  // One interval per run, restarted only when the phase changes — the ticks
+  // themselves go through the updater, so a re-render from anything else (a
+  // keystroke in the name box included) does not reset the bar.
+  useEffect(() => {
+    if (exporting?.phase !== 'working') return
+    const id = window.setInterval(() => {
+      setExporting((run) => {
+        if (run?.phase !== 'working') return run
+        const step = run.step + 1
+        return step >= EXPORT_STEPS
+          ? { ...run, phase: 'naming', step: EXPORT_STEPS }
+          : { ...run, step }
+      })
+    }, EXPORT_TICK_MS)
+    return () => window.clearInterval(id)
+  }, [exporting?.phase])
+
+  /**
+   * The name box opens focused with the suggestion selected, so typing replaces
+   * it and Enter alone accepts it.
+   *
+   * Selected *backwards* — same range, focus at the start rather than the end —
+   * because the suggestion can be longer than the box —
+   * "data-table-solved-cases" is. `select()` leaves the caret at the end and
+   * the browser scrolls to it, so a long name would open showing its tail,
+   * "…table-solved-cases", which reads as damage rather than as a name that
+   * carries on. `scrollLeft` is put back as well, for the browsers that scroll
+   * on the range and not on the direction.
+   *
+   * `setAnnouncement` rather than `announce`: the wrapper is rebuilt every
+   * render and would restart the effect.
+   */
+  useEffect(() => {
+    if (exporting?.phase !== 'naming') return
+    const input = exportNameRef.current
+    if (!input) return
+    input.focus()
+    input.setSelectionRange(0, input.value.length, 'backward')
+    input.scrollLeft = 0
+    setAnnouncement('Export ready. Name the file and press Enter to save it.')
+  }, [exporting?.phase])
+
+  useEffect(() => () => window.clearTimeout(exportCloseTimer.current), [])
+
   /* ---- keyboard exits ---------------------------------------------- */
 
   const { confirmRow, editing, draft, picking, range, wholeColumn } = state
@@ -1520,7 +1934,13 @@ export function DataTable(props: DataTableProps) {
    */
   const onRootKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Escape') return
-    if (confirmRow) dispatch({ type: 'cancelDelete' })
+    // First in the chain, and the only entry that is not reducer state: an
+    // export in flight holds an unsaved file and focus, so it is the innermost
+    // thing open whenever it is open at all. One that is already sliding out
+    // is not open — it holds nothing, and an Escape during those 180ms belongs
+    // to whatever is behind it.
+    if (exporting && exporting.phase !== 'closing') cancelExport()
+    else if (confirmRow) dispatch({ type: 'cancelDelete' })
     else if (editing) dispatch({ type: 'closeEditor' })
     else if (draft) dispatch({ type: 'clearDraft' })
     else if (picking) dispatch({ type: 'armRow', id: picking })
@@ -1568,8 +1988,6 @@ export function DataTable(props: DataTableProps) {
     dispatch({ type: 'setMetric', metric: next })
     onMetricsChange?.(prefs)
   }
-
-  const selectedRecords = () => records.filter((r) => state.selected[r.id])
 
   return (
     <div
@@ -1727,17 +2145,21 @@ export function DataTable(props: DataTableProps) {
 
       {children}
 
-      <div className="dt-table-scroll">
+      <div className="dt-table-scroll" ref={scrollRef}>
+        {/* The insertion marker. One element, moved imperatively from the
+            dragover handler — a drag that re-rendered the table on every
+            pointer move is the thing this replaces. */}
+        <div className="dt-drop-marker" ref={markerRef} aria-hidden="true" />
         <table
           ref={tableRef}
           onMouseDown={onCellMouseDown}
           onMouseOver={onCellMouseOver}
           onKeyDown={onCellKeyDown}
           onDragStart={onDragStart}
-          onDragEnter={onDragEnter}
           onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
           onDragEnd={endDrag}
-          onDrop={endDrag}
+          onDrop={onDrop}
         >
           <thead>
             <tr>
@@ -1931,26 +2353,102 @@ export function DataTable(props: DataTableProps) {
             instead of dropping the pager to a line of its own and leaving the
             actions stranded above it. */}
         <div className="dt-foot-controls">
-          {/* Greyed out with nothing selected. They keep their place either
-              way, so nothing around them shifts when a selection comes and
-              goes. */}
+          {/* Greyed out with nothing selected. Export keeps its place either
+              way, so nothing around it shifts when a selection comes and
+              goes. What does move it is an export: the strip to its right
+              opens out of the pager and walks it left. */}
           <div className="dt-foot-actions">
             <button
               type="button"
               className="dt-btn-secondary"
-              disabled={selectedCount === 0}
-              onClick={() => onExport?.(selectedRecords())}
+              disabled={!canExport}
+              onClick={startExport}
             >
               Export
             </button>
-            <button
-              type="button"
-              className="dt-btn-secondary"
-              disabled={selectedCount === 0}
-              onClick={() => onArchive?.(selectedRecords())}
+
+            {/* PORT ADDITION: the export's own strip, where Archive stood
+                (DEV-22). Zero width between exports — Export stands against
+                the pager — then the bar's *width* is the progress: it grows
+                out of the pager over 480ms, pushing Export left, and at full
+                extent the slab wipes off the box that names the file. */}
+            <div
+              className={cx(
+                'dt-foot-export',
+                exporting && exporting.phase !== 'closing' && 'dt-open',
+                exporting?.phase === 'closing' && 'dt-closing',
+              )}
+              style={
+                exporting?.phase === 'working'
+                  ? // The open width lives in the stylesheet beside everything
+                    // else about the strip; this only takes the step's share
+                    // of it, so the number is not written down twice.
+                    { width: `calc(var(--dt-export-w) * ${exporting.step / EXPORT_STEPS})` }
+                  : undefined
+              }
             >
-              Archive
-            </button>
+              {exporting?.phase === 'working' ? (
+                <div
+                  className="dt-export-bar"
+                  role="progressbar"
+                  aria-label="Exporting"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round((exporting.step / EXPORT_STEPS) * 100)}
+                />
+              ) : exporting?.phase === 'naming' ? (
+                <div className="dt-export-name">
+                  <input
+                    ref={exportNameRef}
+                    type="text"
+                    className="dt-export-input"
+                    value={exporting.name}
+                    aria-label="Name the exported CSV file"
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={(event) => {
+                      const name = event.target.value
+                      setExporting((run) => run && { ...run, name })
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter') return
+                      event.preventDefault()
+                      saveExport()
+                    }}
+                  />
+                  {/* Shown, not typed: the box names the file, it does not
+                      choose the format. A `.csv` typed into it anyway is
+                      folded back out by `csvFileName`. */}
+                  <span className="dt-export-ext" aria-hidden="true">.csv</span>
+                  <button
+                    type="button"
+                    className="dt-export-act dt-export-save"
+                    title={`Save ${csvFileName(exporting.name)}`}
+                    aria-label={`Save ${csvFileName(exporting.name)}`}
+                    onClick={saveExport}
+                  >
+                    <DoneIcon />
+                  </button>
+                  {/* Escape does this too, and did it alone until now — which
+                      made backing out of an export something you had to
+                      already know. Save then discard, in the draft row's
+                      order and with the draft row's two icons. */}
+                  <button
+                    type="button"
+                    className="dt-export-act dt-export-cancel"
+                    title="Cancel the export"
+                    aria-label="Cancel the export"
+                    onClick={cancelExport}
+                  >
+                    <CrossIcon />
+                  </button>
+                </div>
+              ) : exporting ? (
+                // Closing: the bar again, with nothing to say — it is only
+                // here to be the thing the collapsing strip is collapsing.
+                <div className="dt-export-bar" aria-hidden="true" />
+              ) : null}
+            </div>
           </div>
 
           <div className="dt-pager">

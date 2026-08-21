@@ -51,8 +51,7 @@ useEffect(() => {
 <DataTable
   records={records}
   onRecordsChange={setRecords}
-  onExport={(selected) => download(selected)}
-  onArchive={(selected) => archive(selected.map((r) => r.id))}
+  onExport={(exported) => log('exported', exported.length)}
 />
 ```
 
@@ -83,7 +82,7 @@ own the list.
 | `logoSrc` | `string \| null` | the ALP mark | The header's first cell. `null` leaves it empty. |
 | `motion` | `'auto' \| 'always' \| 'never'` | `auto` | See **Motion**. |
 | `cellSelection` | `boolean` | `true` | Excel-style cell ranges. See **Selecting cells**. |
-| `onExport` / `onArchive` | `(selected) => void` | — | The two selection actions, in the footer beside the pager; they stay disabled until something is selected. |
+| `onExport` | `(exported) => void` | — | Fired when an export is **saved**, not when Export is pressed. The component writes the `.csv` itself. See **Exporting**. |
 | `onSelectionChange` | `(ids) => void` | — | |
 | `onEditRecord` | `(record) => void` | — | Fired when the pencil arms a row, for hosts that would rather open their own editor. |
 | `className` / `style` | | | Merged onto the root; `style` can override the accent and padding custom properties. |
@@ -173,14 +172,15 @@ string will do.
 There are two selections, and they do not talk to each other.
 
 **Rows** are selected with the checkboxes. That selection is keyed by record id,
-survives paging and filtering, drives the *Selected* stat and the Export /
-Archive buttons in the footer, and is what `onSelectionChange` reports.
+survives paging and filtering, drives the *Selected* stat and the Export
+button in the footer, and is what `onSelectionChange` reports.
 
 **Cells** are selected as a rectangle, the way a spreadsheet does it — drag
 across them, or click one and Shift+click another. It is a view-level thing:
 the rectangle is stored as page coordinates, so a search, a sort, a page change
 or a reorder drops it rather than dragging a stale selection along. Nothing is
-reported to the host; the point of it is the clipboard.
+reported to the host; the point of it is the clipboard and the Export button
+(see **Exporting**).
 
 | | |
 |---|---|
@@ -319,6 +319,66 @@ const prefs = normaliseMetricPrefs(JSON.parse(localStorage.metrics ?? 'null'))
 an unknown kind, a key that names no metric, and a real metric filed under the
 wrong kind — so storage that has gone stale reads as the defaults rather than as
 a blank block.
+
+## Exporting
+
+The footer's **Export** button writes a `.csv`. The component builds it and
+hands it to the browser — nothing has to be wired up for the button to work.
+
+What it exports is whatever is selected, and the table has three ways of
+selecting something, so the narrowest one live wins:
+
+| what is selected | what the file holds |
+|---|---|
+| a whole column | that column, every row the filters left, across every page |
+| a rectangle of cells | those columns, those rows, as they sit on the page |
+| checked rows | those records, every column, in the order the columns are on screen |
+
+A cell selection beats the checkboxes because it is the more specific of the
+two: someone who dragged across four cells after ticking a row is looking at
+the four cells. With nothing selected at all the button is disabled.
+
+Every file opens with a header row of column labels — a paste lands beside the
+columns it came from and needs none, but a file is opened later by someone who
+was not there. Values are quoted to RFC 4180 (a comma, a quote or a line break
+in a value; a leading or trailing space too, which a spreadsheet would
+otherwise trim), records are separated by CRLF, and the file is written with a
+UTF-8 BOM so Excel on Windows does not mangle non-ASCII text.
+
+**The flow.** Export sits against the pager with nothing between them. Press
+it and a solid accent bar grows out of the pager over 480ms, shouldering Export
+leftwards as it fills — the bar's *width* is the progress, so there is no track
+for it to fill inside; the bar is the number. At full extent the slab wipes off
+left to right, uncovering a box holding a suggested file name, focused with the
+suggestion selected.
+
+Type over it and press Enter — or click the tick — to save. The cross beside
+the tick discards the export, and so does Escape; either way the strip slides
+back to nothing and Export returns to the pager with the selection untouched,
+ready to be pressed again. The `.csv` is shown beside the box rather than typed
+into it, and a `.csv` typed in anyway is folded back out, so the file never
+lands as `report.csv.csv`.
+
+The pager never moves through any of this: the bar opens leftwards into Export,
+not rightwards into the pager. With `motion="never"` (or a reduced-motion OS
+setting) the twelve steps still play — progress is information, not decoration
+— but the tween between them, the wipe, and the slide back out are dropped.
+
+The file is built at the press, not at the save: the selection is free to move
+while the bar fills, and what Export exports is what was selected when Export
+was pressed.
+
+`onExport` fires when the file is **saved**, with the records the exported cells
+came from. It is a notification, not the implementation — use it to log the
+export or mark the records, not to write the file:
+
+```tsx
+<DataTable onExport={(exported) => track('csv_export', { rows: exported.length })} />
+```
+
+The pieces are exported for a host that wants to build the same file itself —
+`planCsv`, `csvCell`, `toCsv`, `csvFileName`, `defaultExportName` and
+`downloadCsv`, over an `ExportPlan` of `{ source, columns, records }`.
 
 ## Styling
 
@@ -475,14 +535,19 @@ host app makes it unsafe:
   were the block's own tag repeated, and what is left — "set how these read" —
   is one glyph, which pairs it with the New record square at the end of the
   toolbar. Nothing restores the initial column order any more.
-- **Export and Archive sit in the footer, left of the pager.** The prototype
-  puts them in the toolbar. Everything else up there changes what the table
-  shows — the search, the rows-per-page slider, the metric cog, New record —
-  while these two do something with rows already chosen, which is what the
-  footer is about: "Showing 1–8 of 17 entries", and the way to the rest of
-  them. They keep the prototype's enabled-only-with-a-selection behaviour and
-  drop to the pager's 34px rank so the bottom strip reads as one row of
-  controls.
+- **Export sits in the footer, left of the pager.** The prototype puts it in the
+  toolbar. Everything else up there changes what the table shows — the search,
+  the rows-per-page slider, the metric cog, New record — while Export does
+  something with rows already chosen, which is what the footer is about:
+  "Showing 1–8 of 17 entries", and the way to the rest of them. It keeps the
+  prototype's enabled-only-with-a-selection behaviour and drops to the pager's
+  34px rank so the bottom strip reads as one row of controls.
+- **Archive is gone, and Export does something.** Both were stubs in the
+  prototype — two labels with no handlers. Rather than ship a second one, the
+  port drops Archive (a host that needs it has `onSelectionChange` and its own
+  button) and spends the slot it vacated on the export the other label was
+  promising: a progress bar that becomes the box naming the file. See
+  **Exporting**.
 - **The sum panel reads more than sums.** It began as one question — "what do
   these add up to" — and the answer to that is `null` for a column of statuses.
   Rather than a metric picker the selection has to be matched to, the toolbar

@@ -747,7 +747,28 @@
 .dt-root .dt-dock-add-list li[aria-disabled="true"]:focus { background: transparent; }
 
 /* ---- 5. Table ---- */
-.dt-root .dt-table-scroll { overflow-x: auto; }
+/* `relative` for the drop marker below, which is positioned against this box
+   and lives in its scrollable overflow — so it travels with the table on a
+   horizontal drag instead of hanging in the viewport. */
+.dt-root .dt-table-scroll { overflow-x: auto; position: relative; }
+
+/* PORT ADDITION: the drop marker.
+
+   A reorder is committed on the drop rather than on the way past (DataTable.tsx),
+   so nothing in the table moves while a column or row is in flight — this rule
+   does the moving instead, snapping to the boundary the dragged thing would land
+   on. 2px in the accent: the system's structural border weight, and the same
+   navy every other "this one" cue in the screen uses. Its box is set inline by
+   the dragover handler; everything that does not change per drag is here.
+
+   Takes no pointer events, or the cell under it would stop being a drop target
+   the moment the marker arrived over it. */
+.dt-root .dt-drop-marker {
+  position: absolute; left: 0; top: 0; display: none;
+  background: var(--dt-accent);
+  pointer-events: none; z-index: 3;
+  transition: left 90ms cubic-bezier(.2, .7, .3, 1), top 90ms cubic-bezier(.2, .7, .3, 1);
+}
 .dt-root table {
   width: 100%; min-width: 1222px;
   border-collapse: collapse; table-layout: fixed; font-size: 13px;
@@ -991,7 +1012,127 @@
 .dt-root .dt-foot-controls {
   display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
 }
-.dt-root .dt-foot-actions { display: flex; gap: 8px; }
+/* No `gap`: the 8px between Export and the export strip belongs to the strip
+   (as its `margin-left`), so it collapses away with the strip's width and
+   leaves Export sitting against the pager between exports. */
+.dt-root .dt-foot-actions { display: flex; align-items: center; }
+
+/* PORT ADDITION (DEV-22): the export strip, where Archive stood.
+
+   It is not a reserved slot. It measures zero between exports, so Export
+   stands 24px from the pager — the footer's own gap, the same one it spends
+   between the count and this group — and the footer's right end reads as two
+   controls in a row rather than as a button stranded mid-strip with a hole
+   beside it.
+
+   The strip's width is then the whole animation. On the press it grows from 0
+   to `--dt-export-w` in twelve steps, and because it sits between Export and
+   the pager inside a group the footer pins to its right edge, growing it walks
+   Export leftwards: the bar opens *out of* the pager rather than appearing
+   over the top of the footer. What is growing is the progress — there is no
+   separate fill — so the bar's width and its `aria-valuenow` are the same
+   fact, and it is correct at any instant either is asked for.
+
+   230px, against the ~93px "ARCHIVE" gave back: the box the bar becomes has to
+   hold a file name and the two buttons that act on it. Width is free here in a
+   way it was not when the slot was reserved — the strip costs nothing at rest,
+   so it can be as wide as its contents want. It still does not hold every name
+   — "data-table-solved-cases" runs past it — which is why the suggestion opens
+   selected from its *start* (see the naming effect in DataTable.tsx) rather
+   than showing its tail.
+
+   The 40ms is EXPORT_TICK_MS in DataTable.tsx: one tick's worth, so each step
+   arrives just as the last finishes and the sweep reads as continuous rather
+   than as twelve hops. */
+.dt-root .dt-foot-export {
+  --dt-export-w: 230px;
+  flex: none; width: 0; margin-left: 0; overflow: hidden;
+  transition: width 40ms linear, margin-left 40ms linear;
+}
+/* Open. During the fill an inline `width` overrides this one with the step's
+   own fraction of it; the name box takes it whole. */
+.dt-root .dt-foot-export.dt-open { width: var(--dt-export-w); margin-left: 8px; }
+/* Going away: one movement, at the menus' duration and the pane's curve,
+   rather than twelve steps backwards. The export is over — the bar is seeing
+   itself out, not reporting anything. */
+.dt-root .dt-foot-export.dt-closing {
+  transition: width 140ms ease-in-out, margin-left 140ms ease-in-out;
+}
+
+/* A solid slab of accent, no border and no label. It carries no type because
+   for the first third of the sweep there is no room for any, and it needs
+   none: a navy rectangle shouldering the Export button out of its way is not
+   ambiguous. The outlined button beside it and the outlined pager past it are
+   what it reads against. */
+.dt-root .dt-export-bar { width: 100%; height: 34px; background: var(--dt-accent); }
+
+/* What the bar becomes, at the width the bar stopped at: same 34px, same
+   accent, turned inside out into a bordered field because it is now waiting on
+   the user rather than telling them to wait. */
+.dt-root .dt-export-name {
+  position: relative;
+  height: 34px; display: flex; align-items: center; gap: 4px;
+  padding-left: 8px;
+  border: 2px solid var(--dt-accent); background: transparent;
+}
+/* The turn itself: the slab does not cut to the field, it wipes off it.
+
+   The overlay is the bar's own accent laid back over the field it became, and
+   the animation peels it away left to right, so the name surfaces first, then
+   the extension, then the two buttons — reading order, and the eye finishes on
+   the controls it is about to use. (Leftward would have continued the sweep's
+   own direction, but it would have uncovered the name last, which is the one
+   thing here worth looking at.) The border is left uncovered throughout, so
+   the field's edge is already drawn while its inside is still arriving.
+
+   `forwards` holds it fully clipped: it is inert after 180ms, and
+   `pointer-events: none` means it never stands between a click and the tick.
+   It plays once, on mount — typing in the field re-renders React but does not
+   remount the node, so the wipe does not restart under the caret. */
+@keyframes dt-export-wipe {
+  from { clip-path: inset(0 0 0 0); }
+  to   { clip-path: inset(0 0 0 100%); }
+}
+.dt-root .dt-export-name::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: var(--dt-accent);
+  animation: dt-export-wipe 180ms ease-in-out forwards;
+}
+.dt-root .dt-export-input {
+  flex: 1; min-width: 0; height: 100%; padding: 0;
+  border: 0; background: transparent; color: var(--dt-ink);
+  font-family: inherit; font-size: 12px; font-weight: 700;
+}
+/* The box already carries the accent border and holds focus by construction,
+   so a second ring inside it would only be noise. */
+.dt-root .dt-export-input:focus { outline: none; }
+.dt-root .dt-export-ext {
+  flex: none; font-size: 12px; font-weight: 700; color: var(--dt-n600);
+}
+/* Commit and discard, the same pair the draft row ends with (and the same two
+   icons), because it is the same idea: something composed in place, kept or
+   thrown away. Borderless rather than `.dt-icon-btn`'s 2px, since these sit
+   *inside* a bordered field and the shape would be a border in a border. Fill
+   carries the hierarchy instead — accent for the one that acts, bare ink for
+   the one that undoes. Not red: nothing is destroyed here, the file was never
+   written, and red is this system's destructive-only signal. */
+.dt-root .dt-export-act {
+  flex: none; width: 30px; height: 30px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; cursor: pointer;
+}
+.dt-root .dt-export-save { background: var(--dt-accent); color: var(--dt-reversed); }
+.dt-root .dt-export-cancel { color: var(--dt-ink); }
+/* They fill the box's inner height exactly, so the default ring at `+2px`
+   would be drawn over the accent border and outside it. Inset instead — the
+   file's rule for a control flush inside a shell (`.dt-rows-step`) — and
+   reversed on the filled one, since an accent ring on an accent fill is no
+   ring at all. These are the only focus indicators the strip draws: the
+   input's is suppressed above, so a keyboard user standing on either button
+   can still see where they are. */
+.dt-root .dt-export-act:focus-visible { outline-offset: -2px; }
+.dt-root .dt-export-save:focus-visible { outline-color: var(--dt-reversed); }
+
 .dt-root .dt-pager { display: flex; gap: 6px; align-items: center; }
 .dt-root .dt-pager-nav {
   height: 34px; padding: 0 12px; border: 2px solid var(--dt-n400);
@@ -1292,7 +1433,18 @@
      - .dt-flipping — the class useFlip puts on the elements it is
        animating — joins the set. useFlip must therefore drive its
        transition from a stylesheet rule or consult the motion flag in
-       JS; an inline `transition` on the element would outrank these. */
+       JS; an inline `transition` on the element would outrank these.
+
+   .dt-foot-export is in the set for the tween only. The bar still opens in
+   the same twelve steps over the same 480ms with motion off, still walking
+   Export left as it goes — the steps are the progress report, not the
+   decoration, and a reader who has asked for less motion has not asked to be
+   told less. What goes is the smoothing between one step and the next, the
+   wipe that uncovers the name box (`.dt-export-name::after`, cut to 1ms so
+   the overlay clips itself away on the first frame rather than sitting over
+   the field), and the 140ms slide the strip makes on its way out — which
+   DataTable.tsx skips outright, unmounting rather than animating, the way the
+   sum panel does. */
 .dt-root[data-dt-motion="never"] .dt-detail-grid.dt-entering,
 .dt-root[data-dt-motion="never"] .dt-detail-grid.dt-collapsing { animation-duration: 1ms; }
 .dt-root[data-dt-motion="never"] .dt-chevron svg,
@@ -1311,6 +1463,9 @@
 .dt-root[data-dt-motion="never"] .dt-chip-caret,
 .dt-root[data-dt-motion="never"] .dt-chip-pop,
 .dt-root[data-dt-motion="never"] .dt-dock-add-list,
+.dt-root[data-dt-motion="never"] .dt-drop-marker,
+.dt-root[data-dt-motion="never"] .dt-foot-export,
+.dt-root[data-dt-motion="never"] .dt-export-name::after,
 .dt-root[data-dt-motion="never"] .dt-flipping { transition-duration: 1ms; animation-duration: 1ms; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1332,5 +1487,8 @@
   .dt-root:not([data-dt-motion="always"]) .dt-chip-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-chip-pop,
   .dt-root:not([data-dt-motion="always"]) .dt-dock-add-list,
+  .dt-root:not([data-dt-motion="always"]) .dt-drop-marker,
+  .dt-root:not([data-dt-motion="always"]) .dt-foot-export,
+  .dt-root:not([data-dt-motion="always"]) .dt-export-name::after,
   .dt-root:not([data-dt-motion="always"]) .dt-flipping { transition-duration: 1ms; animation-duration: 1ms; }
 }
