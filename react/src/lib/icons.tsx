@@ -1,8 +1,9 @@
 /**
  * Icons traced from Lucide (https://lucide.dev) — pencil, trash-2, chevron-down,
- * check, x, plus, rotate-ccw — at stroke-linecap: square / stroke-linejoin: miter to match the
- * Modernist system's hard-edged geometry. Swap in the host codebase's Lucide
- * package if it has one; keep the stroke widths, they are part of the design.
+ * check, x, plus, rotate-ccw, settings — at stroke-linecap: square /
+ * stroke-linejoin: miter to match the Modernist system's hard-edged geometry.
+ * Swap in the host codebase's Lucide package if it has one; keep the stroke
+ * widths, they are part of the design.
  */
 import type { SVGProps } from 'react'
 
@@ -84,6 +85,21 @@ export const PlusIcon = () => (
   </Icon>
 )
 
+/** 12px / stroke 3 — the rows-per-page stepper. */
+export const StepUpIcon = () => (
+  <Icon size={12} width={3}>
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </Icon>
+)
+
+/** 12px / stroke 3 — the rows-per-page stepper. */
+export const StepDownIcon = () => (
+  <Icon size={12} width={3}>
+    <path d="M5 12h14" />
+  </Icon>
+)
+
 /**
  * 15px / stroke 2 — rotate-ccw, on the dock's revert. A circular arrow rather
  * than undo-2's straight one: this puts the whole dock back to unfiltered, it
@@ -93,5 +109,22 @@ export const RevertIcon = () => (
   <Icon size={15} width={2}>
     <path d="M3 2v6h6" />
     <path d="M3.51 15a9 9 0 1 0 2.13-9.36L3 8" />
+  </Icon>
+)
+
+/**
+ * 18px / stroke 2 — lucide `settings`, on the toolbar's metric cog. The
+ * six-lobed gear rather than `sliders-horizontal`: the panel behind it is three
+ * radio groups, not a rack of continuous controls, and a cog is the one shape
+ * every toolbar spends on "set how this reads".
+ *
+ * Stroke 2 at 18px puts about 1.5px on screen — the pencil / trash family's
+ * weight rather than the plus's 3px. A gear this size cannot take the plus's
+ * stroke 4: the six tabs close up into a blob at the rim.
+ */
+export const CogIcon = () => (
+  <Icon size={18} width={2}>
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+    <circle cx="12" cy="12" r="3" />
   </Icon>
 )

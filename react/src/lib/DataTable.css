@@ -128,7 +128,7 @@
   padding: 18px 0; flex-wrap: wrap;
 }
 /* `flex-grow: 0`, deliberately: the spacer is the toolbar's only grower, so it
-   alone absorbs whatever the flow block and the "Show" selector are not using.
+   alone absorbs whatever the flow block and the metric cog are not using.
    Growing this too made the two of them split the slack, and the search field
    then measured differently depending on what the block happened to say — a
    `SUM 177` block and an `IN PROGRESS RATE 62.5% (5 of 8)` block are ~160px
@@ -198,12 +198,16 @@
 }
 .dt-root .dt-filter-list li.dt-on:focus-visible { outline-color: var(--dt-reversed); }
 
-/* PORT ADDITION: page size, which the prototype fixes at 8 in its props. */
+/* PORT ADDITION: page size, which the prototype fixes at 8 in its props. One
+   bordered pill — tag, stepper, input, stepper — with dividers between the
+   parts instead of each part carrying its own border, so nothing doubles up
+   or floats loose inside the group. */
 .dt-root .dt-rows {
-  display: flex; align-items: center; gap: 10px;
-  padding: 0 13px; border: 2px solid var(--dt-ink); background: var(--dt-n100);
+  display: flex; align-items: stretch; gap: 0;
+  border: 2px solid var(--dt-ink); background: var(--dt-n100);
 }
 .dt-root .dt-rows-tag {
+  display: flex; align-items: center; padding: 0 10px;
   font-size: 10px; font-weight: 600; letter-spacing: .16em;
   text-transform: uppercase; color: var(--dt-n600);
 }
@@ -211,28 +215,59 @@
   font-size: 13px; font-weight: 700; min-width: 17px; text-align: right;
   font-variant-numeric: tabular-nums;
 }
-/* Square thumb on a hairline track — the system has no rounded controls, and
-   a native range input is round everywhere by default. */
-.dt-root .dt-rows-range {
-  -webkit-appearance: none; appearance: none;
-  width: 92px; height: 18px; background: transparent; cursor: pointer;
+/* Number input: incrementer with no max, min 1. Width fits 3 digits (999) —
+   the steppers either side make typing a 5-digit value unlikely. Remove the
+   spinner buttons; the steppers and direct typing cover the input. */
+.dt-root .dt-rows-input {
+  width: 36px; padding: 0; text-align: center;
+  border: none; border-left: 2px solid var(--dt-ink); background: transparent;
+  color: var(--dt-ink); font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums; cursor: text;
 }
-.dt-root .dt-rows-range::-webkit-slider-runnable-track {
-  height: 2px; background: var(--dt-n400);
+/* Hide the spinner arrows on all browsers. */
+.dt-root .dt-rows-input::-webkit-outer-spin-button,
+.dt-root .dt-rows-input::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
 }
-.dt-root .dt-rows-range::-moz-range-track { height: 2px; background: var(--dt-n400); }
-.dt-root .dt-rows-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 10px; height: 16px; margin-top: -7px;
-  background: var(--dt-accent); border: none; border-radius: 0;
+.dt-root .dt-rows-input[type=number] { -moz-appearance: textfield; }
+/* Stepper buttons flanking the input — an explicit-click alternative to the
+   hidden native spinner, keyboard/typing still works untouched. Dividers
+   only, no border of their own, so they read as part of the one pill. */
+.dt-root .dt-rows-step {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; padding: 0; flex: none;
+  border: none; border-left: 2px solid var(--dt-ink); background: transparent;
+  color: var(--dt-ink); cursor: pointer;
 }
-.dt-root .dt-rows-range::-moz-range-thumb {
-  width: 10px; height: 16px;
-  background: var(--dt-accent); border: none; border-radius: 0;
+.dt-root .dt-rows-step:disabled { opacity: .45; cursor: not-allowed; }
+.dt-root .dt-rows-step:hover:not(:disabled) { background: var(--dt-n300); }
+/* The global ring in section 1 is `outline-offset: 2px`, which suits a control
+   standing on its own. These three share edges inside the pill, so an outward
+   ring paints 2px over each neighbour's cell and lands on the pill's outer
+   border rather than tracing the cell it belongs to. Inset it, the same way
+   every other flush-edged control here does.
+
+   The ring's left stroke then lands exactly on the cell's own 2px divider, and
+   accent over ink is two dark tones a pixel apart — the ring read as missing
+   that side. Recolouring the divider carries it instead, so all four edges are
+   accent and the ring traces the cell exactly. Same trick as the in-force cue
+   on `.dt-metric-group`: a border changes colour, never width, so nothing in
+   the pill shifts by the pixel the state costs. */
+.dt-root .dt-rows-input:focus-visible,
+.dt-root .dt-rows-step:focus-visible {
+  outline-offset: -2px; border-left-color: var(--dt-accent);
 }
 .dt-root .dt-spacer { flex: 1; }
+/* PORT: `height: 34px` and a flat side padding where the prototype has
+   `padding: 11px 16px` — which came to ~40px tall, the toolbar's rank. Its two
+   callers moved to the footer (section 6), where the pager sets the rank at
+   34, and a 40px action beside a 34px page button reads as two ranks that
+   failed to line up rather than as one row of controls. The border stays the
+   2px ink: these act on the selection and the pager only navigates, so the
+   weight difference against `.dt-pager-nav`'s `--dt-n400` is the hierarchy. */
 .dt-root .dt-btn-secondary {
-  padding: 11px 16px; border: 2px solid var(--dt-ink); background: transparent;
+  height: 34px; padding: 0 15px; border: 2px solid var(--dt-ink);
+  background: transparent;
   color: var(--dt-ink); font-size: 11px; font-weight: 700; letter-spacing: .12em;
   text-transform: uppercase; cursor: pointer; text-align: left;
 }
@@ -243,9 +278,11 @@
   color: var(--dt-reversed); padding: 0; cursor: pointer;
 }
 
-/* ---- 3. Selection actions (in the toolbar) ---- */
-.dt-root .dt-tool-actions { display: flex; gap: 8px; }
-/* the system's disabled step */
+/* ---- 3. Selection actions ---- */
+/* They are laid out in the footer now, beside the pager (section 6); what is
+   left here is the disabled step, which is the system's and not the footer's.
+   The rule stays in section 2's neighbourhood because it is `.dt-btn-secondary`
+   that carries it, and that is defined directly above. */
 .dt-root .dt-btn-secondary:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ---- 4. Filter dock (PORT ADDITION) ---------------------------------
@@ -727,6 +764,15 @@
 .dt-root th.dt-col-action { width: 130px; padding: 12px 16px 12px 12px; border-right: none; }
 .dt-root th.dt-col-data { cursor: default; opacity: .92; }
 .dt-root th.dt-col-data.dt-is-sorted { opacity: 1; }
+/* PORT ADDITION: the header of a column taken whole — a triple click on the
+   label, or Ctrl+Space. The bar is already the accent, so the mark cannot be
+   drawn in it: it is a 3px rule in the reversed ink the header text is set in,
+   inset over the 2px accent border the row carries, which reads as the top edge
+   of a selection running down off the bottom of the page. */
+.dt-root th.dt-col-data.dt-col-picked {
+  opacity: 1;
+  box-shadow: inset 0 -3px 0 0 var(--dt-reversed);
+}
 .dt-root .dt-th-inner { display: flex; align-items: center; gap: 7px; user-select: none; }
 .dt-root .dt-grip {
   cursor: grab; font-size: 13px; line-height: 1; letter-spacing: -2px;
@@ -736,16 +782,28 @@
      an equal negative margin, so the header keeps its exact height. */
   padding: 7px 4px; margin: -7px -4px;
 }
-/* `font: inherit` does not carry letter-spacing or text-transform, so the
-   button would otherwise drop the header's tracking and caps. */
+/* PORT ADDITION: the label is not part of the sort control any more (T-11,
+   DEV-20). It is where the whole-column gesture lands, so it takes no button
+   affordance and no pointer cursor — one click on it does nothing, and a
+   cursor promising otherwise would be the lie. `.dt-th-inner` already carries
+   `user-select: none`, which is what keeps the third click from dragging a
+   text selection out of the header on its way to the gesture. */
+.dt-root .dt-th-label { white-space: nowrap; }
+/* The caret alone sorts now, so an 8px glyph has to be a hit area: the padding
+   is cancelled by an equal negative margin, exactly as the grip beside it does
+   it, so neither the header's height nor the 7px gap moves. `font: inherit`
+   because a <button> does not take it from the row on its own. */
 .dt-root .dt-th-sort {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 0; border: none; background: transparent;
+  display: inline-flex; align-items: center;
+  /* Asymmetric on purpose: the extra 4px goes right, into the cell's own 12px
+     padding where nothing else lives. Growing it leftward instead would eat
+     into the label, and the label is the one thing that must stay clear of the
+     sort — which is the whole reason these two came apart. */
+  padding: 7px 10px 7px 6px; margin: -7px -10px -7px -6px;
+  border: none; background: transparent;
   color: inherit; font: inherit;
-  letter-spacing: inherit; text-transform: inherit;
   cursor: pointer;
 }
-.dt-root .dt-th-label { white-space: nowrap; }
 .dt-root .dt-grip:active, .dt-root .dt-row-grip:active { cursor: grabbing; }
 /* the element under the cursor, hollowed out while it is being moved */
 .dt-root tbody.dt-dragging > tr > td { opacity: .4; }
@@ -916,6 +974,24 @@
 }
 .dt-root .dt-foot-count { font-size: 12px; font-weight: 500; color: var(--dt-n700); }
 .dt-root .dt-foot-count strong { color: var(--dt-ink); font-weight: 700; }
+/* PORT: the selection actions and the pager, as the footer's right-hand half.
+   The actions used to stand in the toolbar. Everything left up there changes
+   what the table shows — the search, the rows-per-page input, the metric cog,
+   the one button that adds a record — while Export and Archive do something
+   with rows already chosen, which is the footer's subject: what is on screen
+   ("Showing 1–8 of 17 entries") and how to reach the rest of it. One strip per
+   idea, and the two actions are on the strip that talks about rows.
+
+   A group rather than a third child of `.dt-foot`: `space-between` over three
+   items would park the actions in the middle of the footer, and the wrap that
+   FT-07 asks for would break the pair apart at exactly the width where they
+   most need to stay together. The 24px inside it is the footer's own gap — the
+   distance the file already spends between two things that are not one
+   control — against the 8px between Export and Archive, which are. */
+.dt-root .dt-foot-controls {
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+}
+.dt-root .dt-foot-actions { display: flex; gap: 8px; }
 .dt-root .dt-pager { display: flex; gap: 6px; align-items: center; }
 .dt-root .dt-pager-nav {
   height: 34px; padding: 0 12px; border: 2px solid var(--dt-n400);
@@ -946,7 +1022,13 @@
   outline: 2px solid var(--dt-accent);
   outline-offset: 2px;
 }
-.dt-root th [role="button"]:focus-visible {
+.dt-root th [role="button"]:focus-visible,
+/* Real buttons on the header bar need it just as much: the bar is painted in
+   the accent, so the accent outline of the base rule lands invisibly on it.
+   This covers the sort caret — which needs it most, being the smallest target
+   in the table since it stopped sharing the label's width — and the select-all
+   box beside the logo. */
+.dt-root thead button:focus-visible {
   outline-color: var(--dt-reversed);
 }
 
@@ -1008,7 +1090,7 @@
    animate.
 
    The class names still say `sum`, which is what the block could answer before
-   the "Show" selector existed. They are the same object and renaming them would
+   the metric cog existed. They are the same object and renaming them would
    buy nothing but a diff. */
 .dt-root .dt-sum {
   display: flex; align-items: center; gap: 10px;
@@ -1032,62 +1114,85 @@
   font-size: 11px; font-weight: 500;
   color: rgba(243, 242, 242, .7); font-variant-numeric: tabular-nums;
 }
+/* PORT ADDITION: "all pages", on a whole-column reading only. Set as a tag
+   rather than as prose — it qualifies the figure the way the metric name does,
+   and the two want to be read as the same kind of thing. Boxed, because the
+   difference between "this page" and "every page" is the one thing about the
+   figure that could be misread. */
+.dt-root .dt-sum-scope {
+  font-size: 9px; font-weight: 600; letter-spacing: .14em;
+  text-transform: uppercase; color: rgba(243, 242, 242, .7);
+  padding: 3px 6px; border: 1px solid rgba(243, 242, 242, .45);
+}
 
-/* ---- "Show": the flow block's preferences (PORT ADDITION) -------------
+/* ---- The metric cog: the flow block's preferences (PORT ADDITION) -----
    The selector that says what each kind of selection reads as, standing where
    "Reset order" did.
 
-   It is drawn to match section 2's `.dt-filter-btn` — the system has one shape
-   for "a labelled value you can open", and this is one — but it is written out
-   rather than borrowing those class names. <MetricMenu> is not a <FilterMenu>
-   (its docblock says why), and the one time this file did put a second caller
-   on `.dt-filter` it needed 4c to prise the two apart again. Three callers and
-   two override blocks is the version of this that goes wrong; the cost of
-   keeping them separate is these twenty lines, and the two shapes are checked
-   against each other by eye when either moves. */
+   It used to be drawn as section 2's `.dt-filter-btn` — a tag, a value and a
+   caret in a 2px frame — and it no longer is: the words it carried were the
+   flow block's, and the block prints them itself. What is left to draw is a
+   button with one job and no reading, so it takes that section's other button
+   shape instead: `.dt-btn-primary`'s 42px square, in the ink rather than the
+   accent, because the accent square beside it is the page's one primary action
+   — there is one of those per screen and this is not it. The two sit as a pair
+   at the end of the toolbar, which is the arrangement the square was chosen
+   for: an odd-sized icon button next to a 42px one reads as a mistake.
+
+   The rules are still written out rather than borrowing `.dt-btn-primary`'s
+   class: <MetricMenu> is not a <FilterMenu> (its docblock says why) and it is
+   not a plain button either — it is a button with a popup hung off it, so its
+   root needs the positioning context and its open state needs the accent fill.
+   The one time this file did put a second caller on `.dt-filter` it needed 4c
+   to prise the two apart again; the cost of keeping them separate is these ten
+   lines, and the shapes are checked against each other by eye when either
+   moves. */
 .dt-root .dt-metric { position: relative; display: flex; }
 .dt-root .dt-metric-btn {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 13px; border: 2px solid var(--dt-ink);
+  width: 42px; height: 42px; display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 0; border: 2px solid var(--dt-ink);
   background: var(--dt-n100); color: var(--dt-ink);
-  cursor: pointer; text-align: left;
+  cursor: pointer;
 }
-.dt-root .dt-metric-tag {
-  font-size: 10px; font-weight: 600; letter-spacing: .16em;
-  text-transform: uppercase; color: var(--dt-n600);
-}
-/* The width of the longest label ("In progress rate"), with the caret pushed
-   off the end of it, so the button is one fixed size for all thirteen metrics.
-   Left to shrink-wrap it would resize as the selection moved from a column of
-   counts to a column of statuses. The toolbar must not move because the readout
-   changed what it is called — and this only holds the selector still. What
-   holds the rest of the toolbar still is `.dt-spacer` being its only growing
-   item (see section 2), so the width the block and this button take is spent
-   out of the gap between them and the search field rather than out of the
-   search field itself. */
-.dt-root .dt-metric-value {
-  font-size: 11px; font-weight: 700; letter-spacing: .12em;
-  text-transform: uppercase; white-space: nowrap; min-width: 138px;
-}
-.dt-root .dt-metric-caret {
-  margin-left: auto;
-  font-size: 8px; line-height: 1; color: var(--dt-n600);
-  transition: transform 180ms ease;
-}
+/* The gear turns a notch on the way open, in place of the caret's 180° flip and
+   on the caret's own duration. lucide `settings` has six tabs, so 60° is the
+   angle that maps it exactly onto itself: the motion is a cog turning and the
+   silhouette it settles into is the one it started from, which is what keeps a
+   turn from reading as a second state of the icon. The state itself is said by
+   the accent fill below — the system's weight for "this one is open" — so the
+   reduced-motion set can drop this to 1ms and lose nothing. */
+.dt-root .dt-metric-cog { display: flex; transition: transform 180ms ease; }
 .dt-root .dt-metric-btn.dt-open { background: var(--dt-accent); color: var(--dt-reversed); }
-.dt-root .dt-metric-btn.dt-open .dt-metric-tag,
-.dt-root .dt-metric-btn.dt-open .dt-metric-caret { color: rgba(243, 242, 242, .7); }
-.dt-root .dt-metric-btn.dt-open .dt-metric-caret { transform: rotate(180deg); }
+.dt-root .dt-metric-btn.dt-open .dt-metric-cog { transform: rotate(60deg); }
 
 /* Hung off the button's right edge, not its left: the selector is the last
    control but one in the toolbar, and a panel dropping leftwards from a button
-   that close to the end would push past the content column. Thirteen options
-   under three headings are taller than most of what this file drops, so it
-   scrolls; the roving focus brings each option into view on its own. */
+   that close to the end would push past the content column. It opens on three
+   category rows and grows by one section's worth of metrics; `max-height` is
+   the guard for the longest of those (Numbers, six), and the roving focus
+   brings each option into view on its own.
+
+   `width: max-content`, where a button wide enough to fit the widest option
+   took `min-width: 100%` and shrink-to-fit. A 42px cog cannot size the panel any
+   more — shrink-to-fit measures against the containing block, which is now the
+   cog — and the options' own `nowrap` would be the only thing holding it open,
+   with the category rows left to wrap inside whatever that came to. The panel
+   sizes itself to its longest line instead, which is a category row: those are
+   always rendered, and an indented 600 option is narrower than the 800 label
+   plus its caret, so expanding a section does not move the panel's left edge. */
+/* The panel draws its own top edge, where `.dt-filter-list` drops one. That
+   list can: it is `min-width: 100%` of a trigger as wide as itself, so the
+   trigger's bottom border closes it along its whole length. This panel is
+   `width: max-content` under a 42px cog, so all but 42px of that edge had
+   nothing drawn on it and the menu hung open at the top. `margin-top: -2px`
+   sits the border on the cog's own bottom edge rather than under it, which
+   keeps the seam one 2px line instead of stacking two into four. */
 .dt-root .dt-metric-pop {
   position: absolute; top: 100%; right: 0; z-index: 20;
-  min-width: 100%; max-height: 320px; overflow-y: auto;
-  border: 2px solid var(--dt-ink); border-top: none;
+  width: max-content; max-height: 320px; overflow-y: auto;
+  margin-top: -2px;
+  border: 2px solid var(--dt-ink);
   background: var(--dt-n100);
   animation: dt-menu-in 140ms ease;
 }
@@ -1100,24 +1205,55 @@
 .dt-root .dt-metric-group { border-left: 2px solid transparent; }
 .dt-root .dt-metric-group.dt-metric-now { border-left-color: var(--dt-accent); }
 .dt-root .dt-metric-group.dt-metric-now .dt-metric-head { color: var(--dt-accent); }
-/* Smaller and wider-tracked than an option, in the muted ink, on the surface
-   step: a heading has to read as a label for the block under it and not as the
-   first entry of that block. The hairline under it is the row-divider weight
-   the system reserves for exactly this. */
+/* The category row — a button now, because it opens the metrics under it, and
+   the row the panel opens on. It is the heavier of the two levels: 800 against
+   an option's 600, on the same 11px, so the step between a kind and a way of
+   reading it is weight and indent rather than size. (It used to be the lighter
+   one — 9px/600 muted, a label over a list that was always there. A row you
+   press to reveal something cannot also be the quietest thing on screen.)
+
+   Full width, its caret pushed to the far edge, on the surface step so the
+   three of them read as the panel's frame with the options sitting inside it.
+   The hairline under it is the row-divider weight the system reserves for
+   exactly this. */
 .dt-root .dt-metric-head {
-  padding: 9px 13px 6px;
-  font-size: 9px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase;
-  color: var(--dt-n600); background: var(--dt-surface);
-  border-bottom: 1px solid var(--dt-n300);
+  display: flex; width: 100%; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 11px 13px;
+  border: none; border-bottom: 1px solid var(--dt-n300);
+  background: var(--dt-surface); color: var(--dt-ink);
+  font-family: inherit; font-size: 11px; font-weight: 800; letter-spacing: .14em;
+  text-transform: uppercase; text-align: left; cursor: pointer;
 }
+/* The panel's own bottom edge is 2px of ink; a shut last section would put a
+   hairline immediately above it. */
+.dt-root .dt-metric-group:last-child:not(.dt-metric-showing) .dt-metric-head {
+  border-bottom: none;
+}
+.dt-root .dt-metric-head:hover { background: var(--dt-n300); }
+.dt-root .dt-metric-head:focus-visible {
+  outline: 2px solid var(--dt-accent); outline-offset: -2px;
+}
+/* Down for shut, up for open — the rotation the cog dropped when it stopped
+   carrying a caret of its own, on the same 180ms the rest of the file spends
+   on one. */
+.dt-root .dt-metric-cat-caret {
+  font-size: 8px; line-height: 1; color: var(--dt-n600);
+  transition: transform 180ms ease;
+}
+.dt-root .dt-metric-group.dt-metric-showing .dt-metric-cat-caret { transform: rotate(180deg); }
+.dt-root .dt-metric-group.dt-metric-now .dt-metric-cat-caret { color: var(--dt-accent); }
 .dt-root .dt-metric-opts { margin: 0; padding: 0; list-style: none; }
+/* Lighter than the category above it and indented past its text, which is the
+   whole of what says these belong to it: the sub-menu has no frame of its own,
+   because a border inside a 2px-bordered panel two levels deep is one more line
+   than the shape needs. */
 .dt-root .dt-metric-opts li {
-  padding: 10px 13px; white-space: nowrap; cursor: pointer;
-  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  padding: 9px 13px 9px 26px; white-space: nowrap; cursor: pointer;
+  font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
   border-bottom: 1px solid var(--dt-n300);
 }
-/* Only the panel's very last option loses its divider; between two sections the
-   heading's own top edge is what separates them. */
+/* Only the panel's very last row loses its divider; between two sections the
+   next category's own top edge is what separates them. */
 .dt-root .dt-metric-group:last-child .dt-metric-opts li:last-child { border-bottom: none; }
 .dt-root .dt-metric-opts li:hover,
 .dt-root .dt-metric-opts li:focus { background: var(--dt-surface); outline: none; }
@@ -1163,7 +1299,8 @@
 .dt-root[data-dt-motion="never"] .dt-caret,
 .dt-root[data-dt-motion="never"] .dt-filter-caret,
 .dt-root[data-dt-motion="never"] .dt-filter-list,
-.dt-root[data-dt-motion="never"] .dt-metric-caret,
+.dt-root[data-dt-motion="never"] .dt-metric-cog,
+.dt-root[data-dt-motion="never"] .dt-metric-cat-caret,
 .dt-root[data-dt-motion="never"] .dt-metric-pop,
 .dt-root[data-dt-motion="never"] .dt-sum,
 .dt-root[data-dt-motion="never"] .dt-dock-tag,
@@ -1183,7 +1320,8 @@
   .dt-root:not([data-dt-motion="always"]) .dt-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-filter-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-filter-list,
-  .dt-root:not([data-dt-motion="always"]) .dt-metric-caret,
+  .dt-root:not([data-dt-motion="always"]) .dt-metric-cog,
+  .dt-root:not([data-dt-motion="always"]) .dt-metric-cat-caret,
   .dt-root:not([data-dt-motion="always"]) .dt-metric-pop,
   .dt-root:not([data-dt-motion="always"]) .dt-sum,
   .dt-root:not([data-dt-motion="always"]) .dt-dock-tag,

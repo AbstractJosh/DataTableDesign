@@ -28,6 +28,7 @@ import './DataTable.css'
 import {
   clampRect,
   describeRange,
+  describeWholeColumn,
   rangeHtml,
   rangeRect,
   rangeSize,
@@ -55,6 +56,8 @@ import {
   DoneIcon,
   PencilIcon,
   PlusIcon,
+  StepDownIcon,
+  StepUpIcon,
   TrashIcon,
 } from './icons'
 import { ALP_LOGO_DATA_URI } from './logo'
@@ -103,9 +106,18 @@ const ANIMATION_FALLBACK_MS = 400
 /** Matches the `dt-sum-out` animation; the panel unmounts when it runs out. */
 const SUM_FADE_MS = 160
 
-/** The toolbar slider's bounds. A host opening outside them widens them. */
-const ROWS_PER_PAGE_MIN = 4
-const ROWS_PER_PAGE_MAX = 24
+/**
+ * The flow block's answer, plus the one thing about it that cannot be read off
+ * a `MetricResult`: whether it was taken over every page or only over this one.
+ * The flag travels *with* the answer rather than beside it so that the fading
+ * copy keeps its own scope on the way out — the live selection has already
+ * gone by then, and a badge that flickered off a beat before the figure did
+ * would be worse than no badge.
+ */
+interface Reading {
+  result: MetricResult
+  allPages: boolean
+}
 
 const cx = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(' ')
@@ -780,6 +792,49 @@ export function DataTable(props: DataTableProps) {
         }
       : null
 
+  /* ---- the whole column (PORT ADDITION) ----------------------------- *
+   * The other flavour of cell selection, and the one the rectangle cannot
+   * express: every value in one column, across every page. It is still a
+   * `RangeRect` — one column wide, top to bottom — but taken over `filtered`
+   * rather than over `visible`, which is the whole difference between the two.
+   * Everything downstream (the reading, the copy, the announcement) is the
+   * existing machinery pointed at that pair instead.
+   * ------------------------------------------------------------------ */
+  const wholeColumnIndex = state.wholeColumn ? state.cols.indexOf(state.wholeColumn) : -1
+  const wholeColumnRect = useMemo<RangeRect | null>(
+    () =>
+      wholeColumnIndex >= 0 && filtered.length > 0
+        ? {
+            top: 0,
+            bottom: filtered.length - 1,
+            left: wholeColumnIndex,
+            right: wholeColumnIndex,
+          }
+        : null,
+    [wholeColumnIndex, filtered.length],
+  )
+
+  /**
+   * The part of the selection that is on this page, in page coordinates —
+   * which is all the cells are able to paint. For a rectangle that is the
+   * rectangle. For a whole column it is that column's slice of this page, with
+   * its top and bottom edges pushed *off* the page wherever the selection
+   * carries on past them: `RecordRow` draws an edge where `index` equals
+   * `box.top` or `box.bottom`, and no row index is ever `-1` or `visible
+   * .length`. So the border closes only where the selection really ends, and
+   * an open edge says "there is more of this above / below".
+   */
+  const paintBox: RangeRect | null =
+    rangeBox ??
+    (wholeColumnRect && visible.length > 0
+      ? {
+          top: page === 0 ? 0 : -1,
+          bottom: page === pageCount - 1 ? visible.length - 1 : visible.length,
+          left: wholeColumnRect.left,
+          right: wholeColumnRect.right,
+        }
+      : null)
+
   /**
    * What the flow block says about the rectangle — a total, a mean, the share
    * of it reading "Success". The rectangle's own cells decide *which* of those
@@ -788,18 +843,25 @@ export function DataTable(props: DataTableProps) {
    * of names, a rectangle half counts and half statuses), and the block then
    * stays away. See metrics.ts.
    */
-  const reading = useMemo(
-    () => (rangeBox ? rangeMetric(visible, state.cols, rangeBox, state.metrics) : null),
-    [rangeBox, visible, state.cols, state.metrics],
-  )
+  const reading = useMemo<Reading | null>(() => {
+    // The whole column is read over `filtered`, so the figure covers the pages
+    // the reader cannot see — which is the reason to have taken it.
+    if (wholeColumnRect) {
+      const result = rangeMetric(filtered, state.cols, wholeColumnRect, state.metrics)
+      return result && { result, allPages: pageCount > 1 }
+    }
+    if (!rangeBox) return null
+    const result = rangeMetric(visible, state.cols, rangeBox, state.metrics)
+    return result && { result, allPages: false }
+  }, [wholeColumnRect, rangeBox, filtered, visible, state.cols, state.metrics, pageCount])
 
   /**
    * The metric the block is displaying, and the section of the selector that is
    * speaking for it. Both fall back with the block: with nothing selected the
    * button names the number preference and no section is marked.
    */
-  const inForce = reading ? metricCategory(reading.metric) : null
-  const showing = metricInForce(state.metrics, reading)
+  const inForce = reading ? metricCategory(reading.result.metric) : null
+  const showing = metricInForce(state.metrics, reading?.result ?? null)
 
   /**
    * An answer that has gone away still has to be on screen to fade out, so the
@@ -807,8 +869,8 @@ export function DataTable(props: DataTableProps) {
    * answer always wins over it, and with motion off it is skipped entirely —
    * the same rule the FLIP follows.
    */
-  const [fadingReading, setFadingReading] = useState<MetricResult | null>(null)
-  const lastReading = useRef<MetricResult | null>(null)
+  const [fadingReading, setFadingReading] = useState<Reading | null>(null)
+  const lastReading = useRef<Reading | null>(null)
   const fadeTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => {
@@ -1060,6 +1122,54 @@ export function DataTable(props: DataTableProps) {
     announce(answer ? `${said} ${answer.speech}.` : said)
   }
 
+  /**
+   * PORT ADDITION: take one column whole, across every page.
+   *
+   * The rectangle's own announcement is no use here — it counts rows on the
+   * page, and most of what this selects is not on it — so the sentence is its
+   * own, with the reading appended exactly as `announceRange` appends it.
+   */
+  const selectWholeColumn = (key: ColumnKey) => {
+    const index = state.cols.indexOf(key)
+    // Nothing to select in an empty result set, and a column that is not in the
+    // order cannot be pointed at.
+    if (index < 0 || filtered.length === 0) return
+
+    dispatch({ type: 'selectColumn', key })
+
+    const rect = { top: 0, bottom: filtered.length - 1, left: index, right: index }
+    const answer = rangeMetric(filtered, state.cols, rect, state.metrics)
+    const said = describeWholeColumn(key, filtered.length, pageCount)
+    announce(answer ? `${said} ${answer.speech}.` : said)
+  }
+
+  /**
+   * The gesture is on the header *cell*, not on a control inside it, because
+   * nothing in the cell wants a third click for itself: the caret sorts on
+   * every one of them and the grip drags. Both are excluded here, so the
+   * gesture's real target is the label and the space around it — and the sort
+   * is left completely alone, which is what splitting the two controls bought.
+   */
+  const onHeadClick = (event: MouseEvent<HTMLTableCellElement>, key: ColumnKey) => {
+    if (!cellSelection || event.detail < 3) return
+    if ((event.target as HTMLElement).closest('.dt-grip, .dt-th-sort')) return
+    selectWholeColumn(key)
+  }
+
+  /**
+   * The gesture's keyboard route, on the header's own sort button: Ctrl+Space,
+   * which is what a spreadsheet has always used for "this whole column". It
+   * hangs off the caret because that is the only focusable thing left in the
+   * header cell that belongs to the column rather than to the drag, and it
+   * takes the key away from the button's own Space, which sorts.
+   */
+  const onHeadKeyDown = (event: KeyboardEvent<HTMLButtonElement>, key: ColumnKey) => {
+    if (!cellSelection || event.key !== ' ') return
+    if (!event.ctrlKey && !event.metaKey) return
+    event.preventDefault()
+    selectWholeColumn(key)
+  }
+
   const onCellMouseDown = (event: MouseEvent<HTMLTableElement>) => {
     if (!cellSelection || event.button !== 0) return
     const target = event.target as HTMLElement
@@ -1131,11 +1241,15 @@ export function DataTable(props: DataTableProps) {
   }, [])
 
   const copyRange = () => {
-    if (!rangeBox) return
-    const { cells } = rangeSize(rangeBox)
+    // A whole column copies every row the filters left, not the eight on
+    // screen: the rows that are not on screen are the reason it was taken.
+    const rows = wholeColumnRect ? filtered : visible
+    const rect = wholeColumnRect ?? rangeBox
+    if (!rect) return
+    const { cells } = rangeSize(rect)
     void writeClipboard(
-      rangeText(visible, state.cols, rangeBox),
-      rangeHtml(visible, state.cols, rangeBox),
+      rangeText(rows, state.cols, rect),
+      rangeHtml(rows, state.cols, rect),
     ).then((ok) => {
       announce(
         ok
@@ -1164,7 +1278,7 @@ export function DataTable(props: DataTableProps) {
 
     if (mod && (key === 'c' || key === 'C')) {
       // With nothing selected, leave the copy to the browser.
-      if (!rangeBox) return
+      if (!rangeBox && !wholeColumnRect) return
       // Taking the keydown's default also cancels the browser's own copy of
       // the (empty) text selection, so there is one clipboard write, not two.
       event.preventDefault()
@@ -1182,6 +1296,15 @@ export function DataTable(props: DataTableProps) {
         focus: { row: rows - 1, col: cols - 1 },
       })
       announceRange(whole)
+      return
+    }
+
+    // PORT ADDITION: the spreadsheet key for "this whole column", from inside
+    // the grid. The column comes from the cell that holds focus rather than
+    // from the rectangle — Ctrl+Space is about where the caret is standing.
+    if (mod && key === ' ') {
+      event.preventDefault()
+      selectWholeColumn(state.cols[Number(target.dataset.col)])
       return
     }
 
@@ -1387,7 +1510,7 @@ export function DataTable(props: DataTableProps) {
 
   /* ---- keyboard exits ---------------------------------------------- */
 
-  const { confirmRow, editing, draft, picking, range } = state
+  const { confirmRow, editing, draft, picking, range, wholeColumn } = state
 
   /**
    * Escape backs out one level at a time. The prototype listens on `document`;
@@ -1403,7 +1526,7 @@ export function DataTable(props: DataTableProps) {
     else if (picking) dispatch({ type: 'armRow', id: picking })
     // last in the chain, so it never swallows an Escape one of the modes above
     // was waiting for
-    else if (range) dispatch({ type: 'clearRange' })
+    else if (range || wholeColumn) dispatch({ type: 'clearRange' })
     else return
     event.stopPropagation()
   }
@@ -1424,10 +1547,6 @@ export function DataTable(props: DataTableProps) {
   const goToPage = (next: number) => {
     dispatch({ type: 'setPage', page: Math.max(0, Math.min(next, pageCount - 1)) })
   }
-
-  // The slider's own range, widened if the host opened on a value outside it.
-  const rowsMin = Math.min(ROWS_PER_PAGE_MIN, initialRowsPerPage)
-  const rowsMax = Math.max(ROWS_PER_PAGE_MAX, initialRowsPerPage)
 
   const setRowsPerPage = (rows: number) => {
     if (rows === rowsPerPage) return
@@ -1499,21 +1618,45 @@ export function DataTable(props: DataTableProps) {
             search keeps its 380px cap and `.dt-spacer` absorbs the width, so the
             controls on the right do not move. */}
 
-        <label className="dt-rows">
-          <span className="dt-rows-tag">Rows</span>
+        {/* A <div>, deliberately not a <label>. A label's labeled control is
+            the first labelable descendant — here the − button, not the input —
+            and HTML forwards both activation and :hover from the whole label
+            to it. As a <label> this pill decremented the count when you
+            clicked the word "Rows", and lit the − button whenever the pointer
+            was anywhere inside, including over +. The input names itself with
+            aria-label instead, and the tag is decorative. */}
+        <div className="dt-rows">
+          <span className="dt-rows-tag" aria-hidden="true">Rows</span>
+          <button
+            type="button"
+            className="dt-rows-step"
+            aria-label="Decrease rows per page"
+            disabled={rowsPerPage <= 1}
+            onClick={() => setRowsPerPage(Math.max(1, rowsPerPage - 1))}
+          >
+            <StepDownIcon />
+          </button>
           <input
-            className="dt-rows-range"
-            type="range"
-            min={rowsMin}
-            max={rowsMax}
+            className="dt-rows-input"
+            type="number"
+            min={1}
             step={1}
             value={rowsPerPage}
             aria-label="Rows per page"
-            aria-valuetext={`${rowsPerPage} rows per page`}
-            onChange={(event) => setRowsPerPage(Number(event.target.value))}
+            onChange={(event) => {
+              const value = Number(event.target.value)
+              if (value >= 1) setRowsPerPage(value)
+            }}
           />
-          <span className="dt-rows-value">{rowsPerPage}</span>
-        </label>
+          <button
+            type="button"
+            className="dt-rows-step"
+            aria-label="Increase rows per page"
+            onClick={() => setRowsPerPage(rowsPerPage + 1)}
+          >
+            <StepUpIcon />
+          </button>
+        </div>
 
         <div className="dt-spacer" />
 
@@ -1522,44 +1665,31 @@ export function DataTable(props: DataTableProps) {
             the gap without moving the buttons to its right. */}
         {shownReading ? (
           <div className={cx('dt-sum', !reading && 'dt-out')} aria-hidden="true">
-            <span className="dt-sum-tag">{shownReading.tag}</span>
-            <span className="dt-sum-value">{shownReading.value}</span>
+            <span className="dt-sum-tag">{shownReading.result.tag}</span>
+            <span className="dt-sum-value">{shownReading.result.value}</span>
             {/* A rate's "5 of 8". The parentheses belong to the panel rather
                 than to the engine's string — they are punctuation around a
                 number, not part of it. */}
-            {shownReading.note ? (
-              <span className="dt-sum-note">({shownReading.note})</span>
+            {shownReading.result.note ? (
+              <span className="dt-sum-note">({shownReading.result.note})</span>
+            ) : null}
+            {/* PORT ADDITION: the scope, and only when it is not the obvious
+                one. A whole-column reading covers rows that are not on screen,
+                so a figure four times the size of the visible column needs to
+                say why — otherwise it reads as a bug. */}
+            {shownReading.allPages ? (
+              <span className="dt-sum-scope">all pages</span>
             ) : null}
           </div>
         ) : null}
 
-        {/* Selection actions — greyed out with nothing selected. They keep their
-            place in the toolbar either way, so the table never shifts. */}
-        <div className="dt-tool-actions">
-          <button
-            type="button"
-            className="dt-btn-secondary"
-            disabled={selectedCount === 0}
-            onClick={() => onExport?.(selectedRecords())}
-          >
-            Export
-          </button>
-          <button
-            type="button"
-            className="dt-btn-secondary"
-            disabled={selectedCount === 0}
-            onClick={() => onArchive?.(selectedRecords())}
-          >
-            Archive
-          </button>
-        </div>
-
         {/* PORT ADDITION: what each kind of selection should read as. It stands
-            where "Reset order" did — the flow block above is the only thing in
-            the toolbar it speaks for, and the two want to be read together.
-            It names the metric in force rather than a setting of its own, so it
-            tracks the selection: drag across counts and it reads Sum, drag
-            across statuses and it reads Success rate, with nothing to set in
+            where "Reset order" did — the flow block beside it is the only thing
+            in the toolbar it speaks for, and the two want to be read together.
+            What it carries — in its name and its tooltip, since a cog has no
+            words — is the metric in force rather than a setting of its own, so
+            it tracks the selection: drag across counts and it says Sum, drag
+            across statuses and it says Success rate, with nothing to set in
             between. */}
         <MetricMenu
           prefs={state.metrics}
@@ -1645,10 +1775,12 @@ export function DataTable(props: DataTableProps) {
                     className={cx(
                       'dt-col-data',
                       active && 'dt-is-sorted',
+                      state.wholeColumn === key && 'dt-col-picked',
                       drag?.kind === 'col' && drag.id === key && 'dt-dragging',
                     )}
                     style={{ width: COLUMN_WIDTHS[key] }}
                     aria-sort={active ? (ascending ? 'ascending' : 'descending') : 'none'}
+                    onClick={(event) => onHeadClick(event, key)}
                   >
                     <div className="dt-th-inner">
                       {/* As with the rows: the grip is the drag source, so a
@@ -1671,16 +1803,42 @@ export function DataTable(props: DataTableProps) {
                       >
                         ⠿
                       </span>
-                      {/* Label and caret share one control, so the arrow is part
-                          of the hit area. */}
+                      {/* PORT ADDITION: the label is not a sort target any
+                          more (T-11) — it is where the whole-column gesture
+                          lands, and the two cannot share an element: three
+                          clicks on a sort control is three sorts, which is
+                          what the user sees before the third one arrives. It
+                          stays a plain span rather than becoming a third
+                          button in the cell, because the header already
+                          spends two tab stops per column and the gesture has
+                          its keyboard route on the caret beside it. */}
+                      <span
+                        className="dt-th-label"
+                        title={
+                          cellSelection
+                            ? `Triple click to select the whole ${COLUMN_LABELS[key]} column`
+                            : undefined
+                        }
+                      >
+                        {COLUMN_LABELS[key]}
+                      </span>
+                      {/* The caret alone sorts. It is padded out to a real hit
+                          area in the stylesheet, the way the grip is. */}
                       <button
                         type="button"
                         className="dt-th-sort"
                         title={`Sort by ${COLUMN_LABELS[key]}`}
                         aria-label={`Sort by ${COLUMN_LABELS[key]}`}
+                        /* The accessible name stays the button's one job. The
+                           second gesture is advertised the standard way
+                           instead — a name that recited it would be read out
+                           on every one of the six headers, every trip through
+                           the row, to say something that is true of all of
+                           them. */
+                        aria-keyshortcuts={cellSelection ? 'Control+Space' : undefined}
                         onClick={() => dispatch({ type: 'toggleSort', key })}
+                        onKeyDown={(event) => onHeadKeyDown(event, key)}
                       >
-                        <span className="dt-th-label">{COLUMN_LABELS[key]}</span>
                         <span className={cx('dt-caret', ascending && 'dt-asc')}>▼</span>
                       </button>
                     </div>
@@ -1728,7 +1886,7 @@ export function DataTable(props: DataTableProps) {
               zebra={zebraRows}
               motion={motion}
               rowPosition={`row ${index + 1} of ${visible.length}`}
-              range={rangeBox}
+              range={paintBox}
               activeCol={activeCell?.row === index ? activeCell.col : null}
               tabCell={tabCell}
               onToggleSelect={(id) => dispatch({ type: 'toggleSelect', id })}
@@ -1766,36 +1924,66 @@ export function DataTable(props: DataTableProps) {
         <div className="dt-foot-count">
           Showing <strong>{rangeLabel}</strong> of {filtered.length} entries
         </div>
-        <div className="dt-pager">
-          <button
-            type="button"
-            className="dt-pager-nav"
-            disabled={page === 0}
-            onClick={() => goToPage(page - 1)}
-          >
-            ‹ Prev
-          </button>
-          <span style={{ display: 'flex', gap: 6 }}>
-            {Array.from({ length: pageCount }, (_, i) => (
-              <button
-                key={i}
-                type="button"
-                className={cx('dt-pager-num', i === page && 'dt-active')}
-                aria-current={i === page ? 'page' : undefined}
-                onClick={() => goToPage(i)}
-              >
-                {i + 1}
-              </button>
-            ))}
-          </span>
-          <button
-            type="button"
-            className="dt-pager-nav"
-            disabled={page >= pageCount - 1}
-            onClick={() => goToPage(page + 1)}
-          >
-            Next ›
-          </button>
+
+        {/* PORT: the selection actions and the pager, as one right-hand group.
+            Two children, so the footer's own `space-between` still means "count
+            left, controls right" — and so a narrow footer wraps the group whole
+            instead of dropping the pager to a line of its own and leaving the
+            actions stranded above it. */}
+        <div className="dt-foot-controls">
+          {/* Greyed out with nothing selected. They keep their place either
+              way, so nothing around them shifts when a selection comes and
+              goes. */}
+          <div className="dt-foot-actions">
+            <button
+              type="button"
+              className="dt-btn-secondary"
+              disabled={selectedCount === 0}
+              onClick={() => onExport?.(selectedRecords())}
+            >
+              Export
+            </button>
+            <button
+              type="button"
+              className="dt-btn-secondary"
+              disabled={selectedCount === 0}
+              onClick={() => onArchive?.(selectedRecords())}
+            >
+              Archive
+            </button>
+          </div>
+
+          <div className="dt-pager">
+            <button
+              type="button"
+              className="dt-pager-nav"
+              disabled={page === 0}
+              onClick={() => goToPage(page - 1)}
+            >
+              ‹ Prev
+            </button>
+            <span style={{ display: 'flex', gap: 6 }}>
+              {Array.from({ length: pageCount }, (_, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={cx('dt-pager-num', i === page && 'dt-active')}
+                  aria-current={i === page ? 'page' : undefined}
+                  onClick={() => goToPage(i)}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </span>
+            <button
+              type="button"
+              className="dt-pager-nav"
+              disabled={page >= pageCount - 1}
+              onClick={() => goToPage(page + 1)}
+            >
+              Next ›
+            </button>
+          </div>
         </div>
       </div>
 

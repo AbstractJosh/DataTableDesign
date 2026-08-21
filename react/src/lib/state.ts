@@ -70,6 +70,17 @@ export interface TableState {
    * Independent of `selected`: a range can sit over rows nothing has checked.
    */
   range: CellRange | null
+  /**
+   * PORT ADDITION: the other flavour of cell selection — one whole column,
+   * across every page, named by its key rather than by a pair of corners.
+   *
+   * It is deliberately not a `range`. A rectangle is positional and dies the
+   * moment the page reshuffles under it; this one is declarative ("every value
+   * in this column"), so paging, sorting and reordering all leave it standing,
+   * which is the entire point of the gesture that sets it. The two are mutually
+   * exclusive: starting one takes the other away.
+   */
+  wholeColumn: ColumnKey | null
 }
 
 export const DEFAULT_ROWS_PER_PAGE = 8
@@ -101,6 +112,7 @@ export function initialState(
     entering: {},
     collapsing: {},
     range: null,
+    wholeColumn: null,
   }
 }
 
@@ -118,7 +130,7 @@ export type TableAction =
   | { type: 'setPage'; page: number }
   | { type: 'setRowsPerPage'; rows: number }
   /**
-   * The toolbar's "Show" selector: one category's preference. Which category is
+   * The toolbar's metric cog: one category's preference. Which category is
    * not on the action, because the key already names it — see the case.
    */
   | { type: 'setMetric'; metric: MetricKey }
@@ -153,6 +165,14 @@ export type TableAction =
   | { type: 'setRange'; anchor: CellRef; focus?: CellRef }
   /** Move the far corner — a drag, a Shift+click or a Shift+arrow. */
   | { type: 'extendRange'; focus: CellRef }
+  /**
+   * Take one column whole, across every page (a triple click on its label, or
+   * Ctrl+Space). It carries no sort of its own to restore: the label and the
+   * sort caret are separate controls, so the clicks that make up the gesture
+   * never reach the sort in the first place.
+   */
+  | { type: 'selectColumn'; key: ColumnKey }
+  /** Clears both flavours: the rectangle and the whole column. */
   | { type: 'clearRange' }
   /** Anything that reshuffles which rows are on screen drops the per-row modes. */
   | { type: 'clearTransient' }
@@ -220,6 +240,39 @@ const KEEPS_RANGE: ReadonlySet<TableAction['type']> = new Set<TableAction['type'
   'setMetric',
 ])
 
+/**
+ * PORT ADDITION: the same rule for the whole-column selection, and a much
+ * wider list — because that selection is not positional. It names a column key
+ * and covers whatever the filters left, so paging, resizing the page, sorting,
+ * reordering the columns and reordering the rows all leave it exactly as true
+ * as it was; surviving the page turn is the point of it. What does take it
+ * away is a changed record set (a query, a chip, a delete), a rectangle being
+ * started instead, or any of the per-row modes opening.
+ *
+ * `cleared()` cannot carry this one the way it carries `range`: `setPage` and
+ * `setRowsPerPage` both run it, and both must keep the column.
+ */
+const KEEPS_WHOLE_COLUMN: ReadonlySet<TableAction['type']> = new Set<TableAction['type']>([
+  'selectColumn',
+  'setPage',
+  'clampPage',
+  'setRowsPerPage',
+  'toggleSort',
+  'moveColumn',
+  'setColumnOrder',
+  'rowsReordered',
+  'toggleSelect',
+  'setSelection',
+  'expand',
+  'collapse',
+  'endEnter',
+  'endCollapse',
+  // Load-bearing for the same reason it is in KEEPS_RANGE: the flow block is
+  // reporting on this column, so setting the preference it reads under cannot
+  // be what takes the column away.
+  'setMetric',
+])
+
 /** Drop the per-row modes and cancel any animation still in flight. */
 function cleared(state: TableState): TableState {
   return {
@@ -264,6 +317,9 @@ export function reducer(state: TableState, action: TableAction): TableState {
   }
   if (next.range && !KEEPS_RANGE.has(action.type)) {
     next = { ...next, range: null }
+  }
+  if (next.wholeColumn && !KEEPS_WHOLE_COLUMN.has(action.type)) {
+    next = { ...next, wholeColumn: null }
   }
   return next
 }
@@ -537,8 +593,17 @@ function apply(state: TableState, action: TableAction): TableState {
           : { anchor: action.focus, focus: action.focus },
       }
 
+    case 'selectColumn':
+      // `range` is not nulled here: `selectColumn` is outside KEEPS_RANGE, so
+      // the post-pass above drops the rectangle for us — the two flavours of
+      // cell selection are never live at once. The sort is untouched, and
+      // `toggleSort` is in KEEPS_WHOLE_COLUMN, so the two are independent in
+      // both directions.
+      return { ...state, wholeColumn: action.key }
+
     case 'clearRange':
-      return state.range ? { ...state, range: null } : state
+      if (!state.range && !state.wholeColumn) return state
+      return { ...state, range: null, wholeColumn: null }
 
     case 'clearTransient':
       return cleared(state)

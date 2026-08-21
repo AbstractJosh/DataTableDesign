@@ -75,6 +75,22 @@ export function describeRange(rect: RangeRect, cols: ColumnKey[], rowCount: numb
   } selected, ${size.cells} cells.`
 }
 
+/**
+ * PORT ADDITION: what the live region says when a whole column is taken.
+ *
+ * Deliberately not measured the way `describeRange` measures a rectangle. A
+ * rectangle is "3 rows by 2 columns" because it is a shape on the page; a
+ * column is one count — every row the filters left — and the page total beside
+ * it is the part worth saying out loud, since the cells being announced are
+ * mostly ones the reader cannot see.
+ */
+export function describeWholeColumn(key: ColumnKey, cells: number, pages: number): string {
+  return (
+    `${COLUMN_LABELS[key]} column selected, ${cells} cell${cells === 1 ? '' : 's'}` +
+    (pages > 1 ? ` across ${pages} pages.` : '.')
+  )
+}
+
 const cellValue = (record: DataTableRecord, key: ColumnKey) => String(record[key] ?? '')
 
 /**

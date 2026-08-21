@@ -88,7 +88,7 @@ const columnKeys = () =>
 
 const DEFAULT_KEYS = ['name', 'date', 'status', 'solvedCases', 'favouriteSeason', 'address']
 
-const rowsSlider = () => screen.getByLabelText('Rows per page') as HTMLInputElement
+const rowsInput = () => screen.getByLabelText('Rows per page') as HTMLInputElement
 
 const stat = (label: string) =>
   screen.getByText(label, { selector: '.dt-stat-label' }).nextElementSibling?.textContent
@@ -585,6 +585,28 @@ describe('selection', () => {
     expect(stat('Selected')).toBe('1')
   })
 
+  it('stands Export and Archive in the footer, immediately left of the pager', () => {
+    setup()
+    const actions = document.querySelector('.dt-foot-actions') as HTMLElement
+    expect(actions).not.toBeNull()
+    // the toolbar is left with nothing that acts on the selection (DEV-19)
+    expect(actions.closest('.dt-toolbar')).toBeNull()
+    expect(actions.closest('.dt-foot')).not.toBeNull()
+    expect(actions.nextElementSibling).toHaveClass('dt-pager')
+    expect(Array.from(actions.children).map((el) => el.textContent)).toEqual([
+      'Export',
+      'Archive',
+    ])
+    // the pair is one group, so the footer's space-between still has two
+    // children and a narrow footer wraps them together
+    expect(actions.parentElement).toHaveClass('dt-foot-controls')
+    expect(
+      Array.from(document.querySelector('.dt-foot')!.children).map(
+        (el) => el.className,
+      ),
+    ).toEqual(['dt-foot-count', 'dt-foot-controls'])
+  })
+
   it('enables Export and Archive only with a selection, and hands over the records', async () => {
     const onExport = vi.fn()
     const { user } = setup({ onExport })
@@ -610,7 +632,7 @@ describe('selection', () => {
  * keyboard contract is exercised there — same component, same keys, and the
  * dock's own lists are held to it too.
  *
- * The toolbar's "Show" selector is deliberately NOT this component — it holds
+ * The toolbar's metric cog is deliberately NOT this component — it holds
  * one value per kind of cell content rather than one value — but it answers the
  * same keys, and the "flow block" describe holds it to them.
  */
@@ -713,7 +735,7 @@ describe('rows per page', () => {
     expect(rowNames()).toHaveLength(8)
     expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 1–8 of 17 entries')
 
-    fireEvent.change(rowsSlider(), { target: { value: '4' } })
+    fireEvent.change(rowsInput(), { target: { value: '4' } })
     expect(rowNames()).toHaveLength(4)
     expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 1–4 of 17 entries')
     expect(screen.getAllByRole('button', { name: /^[0-9]+$/ })).toHaveLength(5)
@@ -724,7 +746,7 @@ describe('rows per page', () => {
     await user.click(screen.getByRole('button', { name: '2' }))
     const first = rowNames()[0]
 
-    fireEvent.change(rowsSlider(), { target: { value: '4' } })
+    fireEvent.change(rowsInput(), { target: { value: '4' } })
     expect(rowNames()[0]).toBe(first)
     expect(screen.getByRole('button', { name: '3' })).toHaveAttribute('aria-current', 'page')
   })
@@ -732,18 +754,20 @@ describe('rows per page', () => {
   it('takes the prop as its opening value and reports every change', () => {
     const onRowsPerPageChange = vi.fn()
     setup({ rowsPerPage: 5, onRowsPerPageChange })
-    expect(rowsSlider()).toHaveValue('5')
+    expect(rowsInput()).toHaveValue(5)
     expect(rowNames()).toHaveLength(5)
 
-    fireEvent.change(rowsSlider(), { target: { value: '9' } })
+    fireEvent.change(rowsInput(), { target: { value: '9' } })
     expect(onRowsPerPageChange).toHaveBeenCalledWith(9)
     expect(rowNames()).toHaveLength(9)
   })
 
-  it('widens its bounds for a host that opens outside them', () => {
+  it('accepts any value above 1 without bounds constraints', () => {
     setup({ rowsPerPage: 40 })
-    expect(rowsSlider()).toHaveAttribute('max', '40')
-    expect(rowsSlider()).toHaveAttribute('min', '4')
+    expect(rowsInput()).not.toHaveAttribute('max')
+    expect(rowsInput()).toHaveAttribute('min', '1')
+    fireEvent.change(rowsInput(), { target: { value: '100' } })
+    expect(rowNames()).toHaveLength(17) // page has 17 rows, all shown
   })
 
   it('drops the cell range, which was measured against the old page', () => {
@@ -755,7 +779,7 @@ describe('rows per page', () => {
     fireEvent.mouseUp(document)
     expect(document.querySelectorAll('td.dt-range')).toHaveLength(6)
 
-    fireEvent.change(rowsSlider(), { target: { value: '4' } })
+    fireEvent.change(rowsInput(), { target: { value: '4' } })
     expect(document.querySelectorAll('td.dt-range')).toHaveLength(0)
   })
 })
@@ -1140,7 +1164,7 @@ describe('reordering', () => {
 
   /**
    * PORT: this used to end on a "Reset order" click. That button is gone — the
-   * flow block's "Show" selector has its toolbar slot — and with it the only
+   * flow block's metric cog has its toolbar slot — and with it the only
    * control that restored `columns` or cleared the sort from the toolbar. What
    * is left is the move itself, and the way back is the way it came: the header
    * cell is keyed by its column, so the `th` node (and the focus inside it)
@@ -1650,6 +1674,248 @@ describe('cell range', () => {
   })
 })
 
+/* ---- the whole column (DEV-20) ------------------------------------ *
+ * PORT ADDITION. The rectangle above is page-shaped by construction; this is
+ * the selection that is not — a triple click on a header label takes that
+ * column across every page, and the pages the reader cannot see are the point
+ * of it.
+ * ------------------------------------------------------------------- */
+describe('whole column', () => {
+  const cell = (row: number, col: number) =>
+    document.querySelector(`td[data-row="${row}"][data-col="${col}"]`) as HTMLElement
+  const ranged = () => Array.from(document.querySelectorAll<HTMLElement>('td.dt-range'))
+  const head = (key: string) => document.querySelector(`th[data-key="${key}"]`) as HTMLElement
+  const panel = () => document.querySelector('.dt-sum')
+  const shown = () => panel()?.querySelector('.dt-sum-value')?.textContent
+  const scope = () => panel()?.querySelector('.dt-sum-scope')?.textContent
+  /** Solved cases is the fourth column. */
+  const CASES = 3
+
+  const clipboard = () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    return writeText
+  }
+
+  /**
+   * The gesture lands on the label, which is deliberately not a control: the
+   * caret beside it is the sort button, and the two were split apart precisely
+   * so three clicks here are not three sorts (T-11, DEV-20).
+   */
+  const label = (key: string) =>
+    document.querySelector(`th[data-key="${key}"] .dt-th-label`) as HTMLElement
+  const tripleClick = (user: User, key: string) => user.tripleClick(label(key))
+  const caret = (key: string) =>
+    document.querySelector(`th[data-key="${key}"] .dt-th-sort`) as HTMLElement
+
+  it('takes the column a triple click lands on, and marks its header', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'solvedCases')
+
+    // eight rows on the page, every one of them in that column and no other
+    expect(ranged()).toHaveLength(8)
+    expect(ranged().every((el) => el.dataset.col === String(CASES))).toBe(true)
+    expect(head('solvedCases')).toHaveClass('dt-col-picked')
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(1)
+  })
+
+  it('does not touch the sort on its way to the third click', async () => {
+    const { user } = setup()
+    // the whole point of splitting the label off the caret: none of the three
+    // clicks is a sort, so the column is still unsorted afterwards
+    await tripleClick(user, 'name')
+    expect(head('name')).not.toHaveClass('dt-is-sorted')
+    expect(head('name')).toHaveAttribute('aria-sort', 'none')
+
+    // and a sort the user set deliberately survives the gesture untouched,
+    // on the taken column as much as on any other
+    await user.click(screen.getByRole('button', { name: 'Sort by Date' }))
+    await tripleClick(user, 'name')
+    await tripleClick(user, 'date')
+    expect(head('date')).toHaveAttribute('aria-sort', 'ascending')
+    expect(head('date')).toHaveClass('dt-col-picked')
+  })
+
+  it('leaves the label out of the sort entirely', async () => {
+    const { user } = setup()
+
+    // one click, two clicks — the old hit area, and now neither sorts
+    await user.click(label('name'))
+    expect(head('name')).toHaveAttribute('aria-sort', 'none')
+    await user.dblClick(label('name'))
+    expect(head('name')).toHaveAttribute('aria-sort', 'none')
+
+    // the caret is what sorts, and it still cycles asc -> desc -> unsorted
+    await user.click(caret('name'))
+    expect(head('name')).toHaveAttribute('aria-sort', 'ascending')
+    await user.click(caret('name'))
+    expect(head('name')).toHaveAttribute('aria-sort', 'descending')
+    await user.click(caret('name'))
+    expect(head('name')).toHaveAttribute('aria-sort', 'none')
+  })
+
+  it('does not take the column when the third click is on a control', async () => {
+    const { user } = setup()
+
+    // three clicks on the caret is three sorts and no selection: the caret is
+    // the sort control, and a gesture cannot quietly ride on top of one
+    await user.tripleClick(caret('name'))
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(0)
+    expect(head('name')).toHaveAttribute('aria-sort', 'none')
+
+    // and the grip belongs to the drag
+    await user.tripleClick(
+      document.querySelector('th[data-key="name"] .dt-grip') as HTMLElement,
+    )
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(0)
+  })
+
+  it('survives the page turn, which is the whole point of it', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'solvedCases')
+
+    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    expect(ranged()).toHaveLength(8)
+    expect(head('solvedCases')).toHaveClass('dt-col-picked')
+
+    // the last page holds one record, and the column is still taken on it
+    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    expect(ranged()).toHaveLength(1)
+  })
+
+  it('closes the selection border only where the selection ends', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'solvedCases')
+
+    // page one: a top edge, and an open bottom that says it carries on
+    expect(cell(0, CASES)).toHaveClass('dt-range-t')
+    expect(cell(7, CASES)).not.toHaveClass('dt-range-b')
+
+    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    expect(cell(0, CASES)).not.toHaveClass('dt-range-t')
+    expect(cell(7, CASES)).not.toHaveClass('dt-range-b')
+
+    // the last page is where it really stops
+    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    expect(cell(0, CASES)).toHaveClass('dt-range-b')
+    // the sides are closed on every page — it is one column wide throughout
+    expect(cell(0, CASES)).toHaveClass('dt-range-l', 'dt-range-r')
+  })
+
+  it('reads the flow block over every page, and says so', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'solvedCases')
+
+    expect(shown()).toBe('1,481') // all 17, not the 661 on this page
+    expect(scope()).toBe('all pages')
+  })
+
+  it('drops the badge when one page is all there is', async () => {
+    const { user } = setup({ rowsPerPage: 20 })
+    await tripleClick(user, 'solvedCases')
+
+    expect(shown()).toBe('1,481')
+    expect(scope()).toBeUndefined()
+  })
+
+  it('follows the filters rather than the records', async () => {
+    const { user } = setup()
+    await user.type(screen.getByLabelText('Search records'), 'new york')
+    await tripleClick(user, 'solvedCases')
+
+    // 132 My Street and 260 Bay Ridge, both New York: Ethan Noah, Priya
+    // Anand, Naomi Castillo and Julien Moreau
+    expect(shown()).toBe('464') // 42 + 96 + 261 + 65
+  })
+
+  it('copies every row of the column, not the eight on screen', async () => {
+    const { user } = setup()
+    const writeText = clipboard()
+    await tripleClick(user, 'solvedCases')
+    fireEvent.keyDown(cell(0, CASES), { key: 'c', ctrlKey: true })
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+    expect(writeText.mock.calls[0][0].split('\n')).toHaveLength(17)
+    expect(writeText.mock.calls[0][0]).toMatch(/^128\n42\n7\n/)
+    expect(screen.getByRole('status')).toHaveTextContent('Copied 17 cells')
+  })
+
+  it('announces the column, its count and its reading', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'status')
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Status column selected, 17 cells across 3 pages. Success rate 47.1%.',
+    )
+  })
+
+  it('answers Ctrl+Space from the cell that holds focus', () => {
+    setup()
+    fireEvent.keyDown(cell(2, CASES), { key: ' ', ctrlKey: true })
+
+    expect(ranged()).toHaveLength(8)
+    expect(head('solvedCases')).toHaveClass('dt-col-picked')
+    // the keyboard route stepped no sort, so it has none to put back
+    expect(head('solvedCases')).toHaveAttribute('aria-sort', 'none')
+  })
+
+  it('answers Ctrl+Space on the header button too', () => {
+    setup()
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Sort by Address' }), {
+      key: ' ',
+      ctrlKey: true,
+    })
+    expect(head('address')).toHaveClass('dt-col-picked')
+  })
+
+  it('is exclusive with the rectangle, in both directions', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'solvedCases')
+
+    // a press in a cell starts a rectangle and the column goes
+    fireEvent.mouseDown(cell(0, 0))
+    fireEvent.mouseUp(document)
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(0)
+    expect(ranged()).toHaveLength(1)
+
+    // and the other way round
+    await tripleClick(user, 'solvedCases')
+    expect(ranged()).toHaveLength(8)
+    expect(ranged()[0].dataset.col).toBe(String(CASES))
+  })
+
+  it('is dropped by a changed record set, and not by a re-sort', async () => {
+    const { user } = setup()
+
+    await tripleClick(user, 'solvedCases')
+    await user.click(screen.getByRole('button', { name: 'Sort by Name' }))
+    expect(head('solvedCases')).toHaveClass('dt-col-picked')
+
+    await user.type(screen.getByLabelText('Search records'), 'hart')
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(0)
+  })
+
+  it('gives way to Escape, last in the chain as the rectangle is', async () => {
+    const { user } = setup()
+    await tripleClick(user, 'solvedCases')
+
+    fireEvent.keyDown(cell(0, 0), { key: 'Escape' })
+    expect(ranged()).toHaveLength(0)
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(0)
+  })
+
+  it('is off with the rest of the cell selection', async () => {
+    const { user } = setup({ cellSelection: false })
+    await tripleClick(user, 'solvedCases')
+
+    expect(ranged()).toHaveLength(0)
+    expect(document.querySelectorAll('th.dt-col-picked')).toHaveLength(0)
+    // and the label says nothing about a gesture that is not there
+    expect(label('solvedCases')).not.toHaveAttribute('title')
+    // the caret keeps its own job either way
+    expect(screen.getByRole('button', { name: 'Sort by Solved cases' })).toBeInTheDocument()
+  })
+})
+
 /**
  * The block as it was before it could be asked anything but a total: Sum is
  * still what a rectangle of numbers reads as out of the box, so every rule
@@ -1746,13 +2012,13 @@ describe('sum readout', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Sum 170')
   })
 
-  it('sits in the toolbar, immediately before the selection actions', () => {
+  it('sits in the toolbar, immediately before the cog that sets it', () => {
     setup()
     sweep(cell(0, CASES), cell(2, CASES))
 
     const block = panel() as HTMLElement
     expect(block.closest('.dt-toolbar')).not.toBeNull()
-    expect(block.nextElementSibling).toHaveClass('dt-tool-actions')
+    expect(block.nextElementSibling).toHaveClass('dt-metric')
     // and it is after the spacer, so the buttons beside it never move
     expect(block.previousElementSibling).toHaveClass('dt-spacer')
   })
@@ -1813,7 +2079,7 @@ describe('sum readout', () => {
  * PORT ADDITION: the same block, asked something other than "what do these add
  * up to".
  *
- * The toolbar's "Show" selector does not pick the metric. It holds one
+ * The toolbar's metric cog does not pick the metric. It holds one
  * preference per *kind* of cell content — numbers, Status values, Favourite
  * season values — and the rectangle decides which of them answers: sweep a
  * column of counts and the number preference reads them, sweep a column of
@@ -1854,16 +2120,49 @@ describe('flow block', () => {
 
   /** The selector, by its accessible name — "Showing <the metric in force>". */
   const showButton = () => screen.getByRole('button', { name: /^Showing/ })
+  /**
+   * The metric the selector says is in force. Read off the accessible name and
+   * not the button's words, because a cog has none (DEV-18): the reading is the
+   * flow block's to print, and the button carries it for a screen reader and in
+   * its tooltip. `shown()` above is the block's own answer — the number — and
+   * these two are the two halves the pair is there to keep in step.
+   */
+  const showing = () =>
+    /^Showing (.+?)\./.exec(showButton().getAttribute('aria-label') || '')?.[1]
   /** Its panel. Reached by class: the dock's chip popups are dialogs too. */
   const pop = () => document.querySelector('.dt-metric-pop')
+  /** A category row — the button that opens the metrics filed under it. */
+  const category = (name: string) =>
+    screen.getByRole('button', { name: new RegExp(`^${name}( —|$)`) })
+  /**
+   * A category row's own word. Its `textContent` also holds the caret glyph and,
+   * on the row in force, the screen-reader note — both deliberate, and neither
+   * the name of the kind.
+   */
+  const catName = (el: Element) => (el.querySelector('span')?.firstChild?.textContent || '').trim()
+  /**
+   * Which categories are showing their metrics. One at a time, or none. Scoped
+   * to the panel: the cog itself is an `aria-expanded` button too, and it is
+   * open whenever any of this is on screen.
+   */
+  const showingCategories = () =>
+    Array.from(pop()?.querySelectorAll('[aria-expanded="true"]') || []).map(catName)
 
   /**
-   * Set one category's preference, the way a user does. Picking deliberately
-   * leaves the panel open so a second kind can be set in the same visit, so
-   * this opens it only when it is shut.
+   * Set one category's preference, the way a user does: open the panel, open
+   * the kind, pick the metric. Picking deliberately leaves both open so a
+   * second kind can be set in the same visit, so this opens only what is shut —
+   * and expanding a second kind collapses the first, which is why the radio is
+   * looked for after the category is opened rather than before.
    */
   const pick = async (user: User, metric: string) => {
     if (!pop()) await user.click(showButton())
+    if (!screen.queryByRole('radio', { name: metric })) {
+      for (const name of ['Numbers', 'Status', 'Favourite season']) {
+        await user.click(category(name))
+        if (screen.queryByRole('radio', { name: metric })) break
+      }
+    }
     await user.click(screen.getByRole('radio', { name: metric }))
   }
 
@@ -1875,7 +2174,7 @@ describe('flow block', () => {
 
   it('opens on Sum, which is all the block could say before the selector', () => {
     setup()
-    expect(showButton()).toHaveTextContent('Sum')
+    expect(showing()).toBe('Sum')
     expect(panel()).toBeNull()
 
     sweep(cell(0, CASES), cell(2, CASES))
@@ -1936,7 +2235,7 @@ describe('flow block', () => {
     sweep(cell(0, CASES), cell(2, CASES)) // 128, 42, 7
     expect(tag()).toBe('MEAN')
     expect(shown()).toBe('59')
-    expect(showButton()).toHaveTextContent('Mean')
+    expect(showing()).toBe('Mean')
 
     /*
      * The headline behaviour. The same drag one column to the left lands on
@@ -1949,7 +2248,7 @@ describe('flow block', () => {
     expect(tag()).toBe('SUCCESS RATE')
     expect(shown()).toMatch(/^50\s?%$/)
     expect(note()).toBe('(2 of 4)')
-    expect(showButton()).toHaveTextContent('Success rate')
+    expect(showing()).toBe('Success rate')
 
     sweep(cell(0, CASES), cell(2, CASES))
     expect(tag()).toBe('MEAN')
@@ -2044,23 +2343,28 @@ describe('flow block', () => {
 
   it('names the metric in force, and falls back to the numbers one with nothing selected', async () => {
     const { user } = setup()
-    expect(showButton()).toHaveTextContent('Sum')
-    // the words are not the only way to know what it holds, and the name says
-    // what the control is for as well as what it currently reads
+    expect(showing()).toBe('Sum')
+    // a cog, so the name is the whole of what it says: what is in force, and
+    // what the control is for. The tooltip is the sighted half of it — the one
+    // reading the button used to print, kept for a pointer.
+    expect(showButton()).toHaveTextContent('')
+    expect(showButton().querySelector('svg')).not.toBeNull()
     expect(showButton()).toHaveAccessibleName(/^Showing Sum\. Set what each kind/)
+    expect(showButton()).toHaveAttribute('title', 'Showing Sum')
 
     sweep(cell(0, STATUS), cell(3, STATUS))
-    expect(showButton()).toHaveTextContent('Success rate')
+    expect(showing()).toBe('Success rate')
     expect(showButton()).toHaveAccessibleName(/^Showing Success rate\./)
+    expect(showButton()).toHaveAttribute('title', 'Showing Success rate')
 
     // with the rectangle gone nothing is in force, so it falls back to the
     // numbers preference rather than holding on to the last answer
     fireEvent.keyDown(cell(0, STATUS), { key: 'Escape' })
     expect(panel()).toBeNull()
-    expect(showButton()).toHaveTextContent('Sum')
+    expect(showing()).toBe('Sum')
 
     await pick(user, 'Median')
-    expect(showButton()).toHaveTextContent('Median')
+    expect(showing()).toBe('Median')
   })
 
   it('speaks the metric in force, not the word Sum', async () => {
@@ -2090,7 +2394,7 @@ describe('flow block', () => {
       metrics: { number: 'median', status: 'rate:status:Failed' },
       onMetricsChange,
     })
-    expect(showButton()).toHaveTextContent('Median')
+    expect(showing()).toBe('Median')
 
     sweep(cell(0, STATUS), cell(3, STATUS))
     expect(tag()).toBe('FAILED RATE')
@@ -2107,7 +2411,7 @@ describe('flow block', () => {
     })
 
     // and the prop does not own it after that first read — the selector does
-    expect(showButton()).toHaveTextContent('Failed rate')
+    expect(showing()).toBe('Failed rate')
   })
 
   it('drops a preference that names no metric, and one filed under the wrong kind', () => {
@@ -2122,7 +2426,7 @@ describe('flow block', () => {
       },
     })
     // neither blanks the block: the default stands where the junk was
-    expect(showButton()).toHaveTextContent('Sum')
+    expect(showing()).toBe('Sum')
 
     sweep(cell(0, STATUS), cell(3, STATUS))
     expect(tag()).toBe('SUCCESS RATE')
@@ -2132,7 +2436,7 @@ describe('flow block', () => {
     expect(shown()).toMatch(/^25\s?%$/)
   })
 
-  it('stands where "Reset order" did, between the actions and New record', () => {
+  it('stands where "Reset order" did, between the block and New record', () => {
     setup()
     const root = showButton().closest('.dt-metric') as HTMLElement
     expect(root).not.toBeNull()
@@ -2141,13 +2445,15 @@ describe('flow block', () => {
     expect(root.closest('.dt-filter')).toBeNull()
     expect(document.querySelectorAll('.dt-metric .dt-filter')).toHaveLength(0)
 
-    expect(root.previousElementSibling).toHaveClass('dt-tool-actions')
+    // nothing selected, so the block is not mounted and the spacer is what it
+    // follows; with a rectangle it is the block itself (see "flow block")
+    expect(root.previousElementSibling).toHaveClass('dt-spacer')
     expect(root.nextElementSibling).toHaveClass('dt-btn-primary')
     // the button whose slot this is has gone with its action
     expect(screen.queryByRole('button', { name: 'Reset order' })).toBeNull()
   })
 
-  it('sections the panel by kind, without making the headings options', async () => {
+  it('opens on the kinds alone, and expands one at a time into its metrics', async () => {
     const { user } = setup()
     await user.click(showButton())
 
@@ -2155,45 +2461,66 @@ describe('flow block', () => {
       screen.getByRole('dialog', { name: 'What each kind of cell selection reads as' }),
     ).toBe(pop())
 
-    // three radio groups rather than one list of thirteen: "Success rate" is
-    // not an alternative to "Sum", it is the answer to a different question
-    const groups = screen.getAllByRole('radiogroup')
-    expect(groups.map((group) => within(group).getAllByRole('radio').length)).toEqual([6, 3, 4])
-    expect(screen.getByRole('radiogroup', { name: 'Numbers' })).toBe(groups[0])
-    expect(screen.getByRole('radiogroup', { name: 'Status' })).toBe(groups[1])
-    expect(screen.getByRole('radiogroup', { name: 'Favourite season' })).toBe(groups[2])
+    // the three kinds, and nothing else: a metric is the answer to the second
+    // question, and the panel has not asked the first one yet
+    const heads = Array.from(document.querySelectorAll('.dt-metric-head'))
+    expect(heads.map(catName)).toEqual(['Numbers', 'Status', 'Favourite season'])
+    heads.forEach((head) => expect(head).toHaveAttribute('aria-expanded', 'false'))
+    expect(screen.queryAllByRole('radiogroup')).toHaveLength(0)
+    expect(screen.queryAllByRole('radio')).toHaveLength(0)
 
-    // one current pick in each, not one across the panel
+    // opening one shows its metrics, and only its own — "Success rate" is not
+    // an alternative to "Sum", it is the answer to a different question
+    await user.click(category('Numbers'))
+    expect(showingCategories()).toEqual(['Numbers'])
+    const numbers = screen.getByRole('radiogroup', { name: 'Numbers' })
+    expect(within(numbers).getAllByRole('radio')).toHaveLength(6)
+    expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual(['Sum'])
+
+    // and a second kind takes the first one's place rather than joining it
+    await user.click(category('Status'))
+    expect(showingCategories()).toEqual(['Status'])
+    expect(within(screen.getByRole('radiogroup', { name: 'Status' })).getAllByRole('radio'))
+      .toHaveLength(3)
+    expect(screen.queryByRole('radio', { name: 'Sum' })).toBeNull()
+
+    // one current pick per kind, not one across the panel — each section says
+    // so when it is the one showing
     expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual([
-      'Sum',
       'Success rate',
-      'Spring rate',
     ])
+    await user.click(category('Favourite season'))
+    expect(within(screen.getByRole('radiogroup', { name: 'Favourite season' })).getAllByRole('radio'))
+      .toHaveLength(4)
+    expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual(['Spring rate'])
 
-    // the headings are plain divs: not radios, not focusable, and not
-    // something the arrows can land on
-    const headings = Array.from(document.querySelectorAll('.dt-metric-head'))
-    expect(headings.map(text)).toEqual(['Numbers', 'Status', 'Favourite season'])
-    headings.forEach((heading) => {
-      expect(heading).not.toHaveAttribute('tabindex')
-      expect(heading).not.toHaveAttribute('role')
-    })
+    // pressing the open one shuts it, back to the three kinds
+    await user.click(category('Favourite season'))
+    expect(showingCategories()).toEqual([])
+    expect(screen.queryAllByRole('radio')).toHaveLength(0)
 
-    // one tab stop per section — not one for the panel, and not thirteen
-    expect(pop()!.querySelectorAll('[tabindex="0"]')).toHaveLength(3)
+    // one tab stop inside the open section, not one per option
+    await user.click(category('Numbers'))
+    expect(pop()!.querySelectorAll('[tabindex="0"]')).toHaveLength(1)
   })
 
-  it('marks the section the selection is being read under', async () => {
+  it('marks the section the selection is being read under, open or shut', async () => {
     const { user } = setup()
     sweep(cell(0, STATUS), cell(3, STATUS))
     await user.click(showButton())
 
+    // the mark is on the category row, so it is there before anything is
+    // expanded — which is the whole point of it now that the panel opens on
+    // the kinds
     const marked = Array.from(document.querySelectorAll('.dt-metric-group.dt-metric-now'))
     expect(marked).toHaveLength(1)
-    expect(within(marked[0] as HTMLElement).getByRole('radio', { name: 'Success rate' }))
-      .toBeInTheDocument()
+    expect(catName(marked[0].querySelector('.dt-metric-head')!)).toBe('Status')
 
     // the accent edge is not the only way to know which one it is
+    expect(category('Status')).toHaveAccessibleName('Status — in use for this selection')
+    await user.click(category('Status'))
+    expect(within(marked[0] as HTMLElement).getByRole('radio', { name: 'Success rate' }))
+      .toBeInTheDocument()
     expect(screen.getByRole('radiogroup', { name: /^Status/ })).toHaveAccessibleName(
       'Status — in use for this selection',
     )
@@ -2205,16 +2532,24 @@ describe('flow block', () => {
     expect(document.querySelectorAll('.dt-metric-now')).toHaveLength(0)
   })
 
-  it('moves inside a section with the arrows, and between them with Tab', async () => {
+  it('goes in and out of a section with the arrows, and across them with Tab', async () => {
     const { user } = setup()
     const radio = (name: string) => screen.getByRole('radio', { name })
     showButton().focus()
 
+    // the cog's own Down opens the panel on the kind in force — Numbers, with
+    // nothing selected — and stops there: the metrics are a level in
     await user.keyboard('{ArrowDown}')
-    expect(radio('Sum')).toHaveFocus() // opens on the section's own pick
+    expect(category('Numbers')).toHaveFocus()
+    expect(screen.queryAllByRole('radio')).toHaveLength(0)
+
+    // one more Down is "go in", onto the section's own pick
+    await user.keyboard('{ArrowDown}')
+    expect(showingCategories()).toEqual(['Numbers'])
+    expect(radio('Sum')).toHaveFocus()
 
     await user.keyboard('{ArrowUp}')
-    expect(radio('Sum')).toHaveFocus() // and stops at the top
+    expect(radio('Sum')).toHaveFocus() // and stops at the top of the section
 
     await user.keyboard('{End}')
     expect(radio('Lowest')).toHaveFocus()
@@ -2224,9 +2559,15 @@ describe('flow block', () => {
     await user.keyboard('{ArrowDown}')
     expect(radio('Lowest')).toHaveFocus()
 
-    // Tab is what crosses, landing on the next section's own pick
+    // Tab is what crosses, landing on the next kind rather than in it
     await user.tab()
+    expect(category('Status')).toHaveFocus()
+
+    await user.keyboard('{ArrowDown}')
     expect(radio('Success rate')).toHaveFocus()
+    // opening Status put Numbers away: one section at a time
+    expect(showingCategories()).toEqual(['Status'])
+    expect(screen.queryByRole('radio', { name: 'Sum' })).toBeNull()
 
     // and moving does not commit: the pick is still where it was
     expect(radio('Success rate')).toHaveAttribute('aria-checked', 'true')
@@ -2234,13 +2575,25 @@ describe('flow block', () => {
     await user.keyboard('{ArrowDown}{Enter}')
     expect(radio('In progress rate')).toHaveAttribute('aria-checked', 'true')
     expect(radio('Success rate')).toHaveAttribute('aria-checked', 'false')
-    // committing does not close, so the same visit can set another kind
+    // committing closes neither the panel nor the section, so the pick just
+    // made is still on screen and the same visit can set another kind
     expect(pop()).not.toBeNull()
+    expect(showingCategories()).toEqual(['Status'])
     expect(radio('In progress rate')).toHaveFocus()
+
+    // Up from the top of a section is "back out": onto its category row, which
+    // shuts it
+    await user.keyboard('{ArrowUp}{ArrowUp}')
+    expect(radio('Success rate')).toHaveFocus()
+    await user.tab({ shift: true })
+    expect(category('Status')).toHaveFocus()
+    await user.keyboard('{ArrowUp}')
+    expect(showingCategories()).toEqual([])
+    expect(category('Status')).toHaveFocus()
 
     // the button still reads Sum: it names the metric in force, and with
     // nothing selected that is the numbers preference, not the pick just made
-    expect(showButton()).toHaveTextContent('Sum')
+    expect(showing()).toBe('Sum')
   })
 
   it('closes on Escape and on a press outside, and hands the focus back', async () => {
@@ -2249,7 +2602,7 @@ describe('flow block', () => {
     await user.keyboard('{ArrowDown}{Escape}')
 
     expect(pop()).toBeNull()
-    expect(showButton()).toHaveTextContent('Sum') // the arrow committed nothing
+    expect(showing()).toBe('Sum') // the arrow committed nothing
     expect(showButton()).toHaveFocus()
 
     // a press anywhere else closes it too, and leaves the focus where the
@@ -2292,20 +2645,22 @@ describe('flow block', () => {
     const radio = (name: string) => screen.getByRole('radio', { name })
     await user.click(showButton())
 
-    await user.tab() // into Status
-    await user.keyboard('{ArrowDown}') // standing on the option below its pick
+    await user.tab() // onto Status
+    await user.keyboard('{ArrowDown}{ArrowDown}') // in, then below its pick
     expect(radio('In progress rate')).toHaveFocus()
 
-    await user.tab({ shift: true })
-    await user.tab({ shift: true })
+    await user.tab({ shift: true }) // back onto Status
+    await user.tab({ shift: true }) // onto Numbers
+    await user.tab({ shift: true }) // out to the cog, panel still standing
     expect(showButton()).toHaveFocus()
+    expect(pop()).not.toBeNull()
 
-    // an arrow from the button means "back into the panel", not "open it": it
-    // has to move focus, and it has to leave every section standing where the
-    // keyboard left it rather than snapping them all back to their picks
+    // an arrow from the cog means "back into the panel", not "open it": it has
+    // to move focus, and it has to leave the panel standing where the keyboard
+    // left it — the same section open, on the same option — rather than
+    // collapsing back to the three kinds
     await user.keyboard('{ArrowDown}')
-    expect(radio('Sum')).toHaveFocus()
-    await user.tab()
+    expect(showingCategories()).toEqual(['Status'])
     expect(radio('In progress rate')).toHaveFocus()
     // and none of that committed anything
     expect(radio('Success rate')).toHaveAttribute('aria-checked', 'true')
