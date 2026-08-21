@@ -2,6 +2,27 @@ export { DataTable, default } from './lib/DataTable'
 export { createDemoRecords, DEMO_RECORDS } from './lib/demoData'
 export { ALP_LOGO_DATA_URI } from './lib/logo'
 export type { CellRange, CellRef, RangeRect } from './lib/cellRange'
+/**
+ * The Export button's file, in pieces. The component writes the `.csv` itself,
+ * so none of this is needed to make the button work — it is here for a host
+ * building the same file from its own data, or saving one to somewhere other
+ * than the user's downloads folder.
+ *
+ * `planCsv` is the whole of it: an `ExportPlan` of `{ source, columns, records }`
+ * in, RFC 4180 text out. The rest are its parts, plus the two naming helpers the
+ * name box uses and `downloadCsv`, which is the only piece that touches the DOM.
+ */
+export {
+  csvCell,
+  csvFileName,
+  defaultExportName,
+  downloadCsv,
+  planCsv,
+  planSize,
+  toCsv,
+  type ExportPlan,
+  type ExportSource,
+} from './lib/csv'
 export {
   COLUMN_LABELS,
   COLUMN_WIDTHS,
