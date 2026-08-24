@@ -48,14 +48,25 @@ import {
 import { DetailPane } from './DetailPane'
 import { COLUMN_DRAG_MIME, FilterDock } from './FilterDock'
 import { COLUMN_TYPES, ENUM_OPTIONS, matchesAll } from './filters'
+import {
+  LOCALES,
+  LOCALE_NAMES,
+  LOCALE_TAGS,
+  STRINGS,
+  readCell,
+  readEnum,
+  stringsFor,
+  type Locale,
+  type Strings,
+} from './i18n'
+import { LanguageSwitch } from './LanguageSwitch'
 import { MetricMenu } from './MetricMenu'
 import {
-  metricCategory,
-  metricInForce,
-  rangeMetric,
-  setMetricPref,
+  metricsInForce,
+  rangeMetrics,
+  toggleMetricPref,
   type MetricKey,
-  type MetricResult,
+  type MetricReading,
 } from './metrics'
 import {
   CheckIcon,
@@ -74,7 +85,6 @@ import { DRAFT_ID, initialState, reducer, type TableAction } from './state'
 import { useFlipReorder, type FlipAxis } from './useFlipReorder'
 import { useMotionEnabled } from './useMotion'
 import {
-  COLUMN_LABELS,
   COLUMN_WIDTHS,
   DEFAULT_COLUMNS,
   PILL_CLASS,
@@ -89,6 +99,13 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 
+/**
+ * English, in every language, and deliberately so: this writes a record's
+ * `date` *field*, which `filters.ts` parses against its own English month table
+ * and `compareCells` sorts as text. A row stamped `19 Ağustos, 2026` would sort
+ * away from its neighbours and fall out of every date filter. The Turkish month
+ * goes on on the way to the screen instead — see `formatDate` in `i18n.ts`.
+ */
 function todayLabel(): string {
   const d = new Date()
   return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]}, ${d.getFullYear()}`
@@ -106,6 +123,37 @@ function nextId(records: DataTableRecord[]): string {
     .map((r) => Number(/^REC-(\d+)$/.exec(String(r.id))?.[1]))
     .filter((n) => Number.isSafeInteger(n))
   return 'REC-' + ((nums.length ? Math.max(...nums) : 4813) + 7)
+}
+
+/**
+ * PORT ADDITION: how many numbered buttons the pager shows at once.
+ *
+ * The prototype prints one per page, which is fine for its 17 records over 3
+ * pages and falls apart at 1000 over 125: the strip outgrows the footer, wraps
+ * over several lines and pushes the Export button off the row. Five is the
+ * window — enough to see where you are relative to your neighbours, few enough
+ * that the footer keeps its shape at any record count.
+ */
+const PAGE_WINDOW = 5
+
+/**
+ * The page numbers to draw, as 0-based indices.
+ *
+ * Centred on the current page and then slid back inside the ends, rather than
+ * paged in fixed blocks of five. A fixed block jumps the whole strip the moment
+ * you cross a boundary — page 5 to page 6 would replace 1-5 with 6-10 and leave
+ * the button you just pressed off the strip entirely. Sliding keeps the current
+ * page in the middle and moves the window one step at a time, so the numbers
+ * either side of you are always the ones you would reach for next.
+ *
+ * The ends are the exception, and they have to be: there is no page 0 to pad
+ * with, so the window stops rather than centring, and page 1 shows 1-5 with the
+ * current page at the left edge. `clamp` is what does that in one line.
+ */
+export function pageWindow(page: number, pageCount: number, size = PAGE_WINDOW): number[] {
+  const span = Math.min(size, Math.max(1, pageCount))
+  const first = clamp(page - (span >> 1), 0, Math.max(0, pageCount - span))
+  return Array.from({ length: span }, (_, i) => first + i)
 }
 
 /** Long enough to outlast the 200ms expand and the 180ms collapse. */
@@ -169,15 +217,15 @@ interface ExportRun {
 }
 
 /**
- * The flow block's answer, plus the one thing about it that cannot be read off
- * a `MetricResult`: whether it was taken over every page or only over this one.
- * The flag travels *with* the answer rather than beside it so that the fading
- * copy keeps its own scope on the way out — the live selection has already
- * gone by then, and a badge that flickered off a beat before the figure did
- * would be worse than no badge.
+ * The flow block's answer — every metric the rectangle's kind is set to, which
+ * is what `MetricReading` holds — plus the one thing about it that cannot be
+ * read off the cells: whether it was taken over every page or only over this
+ * one. The flag travels *with* the answer rather than beside it so that the
+ * fading copy keeps its own scope on the way out — the live selection has
+ * already gone by then, and a badge that flickered off a beat before the
+ * figures did would be worse than no badge.
  */
-interface Reading {
-  result: MetricResult
+interface Reading extends MetricReading {
   allPages: boolean
 }
 
@@ -193,12 +241,17 @@ const clamp = (n: number, low: number, high: number) => Math.max(low, Math.min(h
  * order puts 100 before 20, which is plainly wrong on a column of case counts
  * and would be read as a bug in the sum beside it.
  */
-function compareCells(a: string, b: string): number {
+function compareCells(a: string, b: string, locale?: string): number {
   const x = Number(a)
   const y = Number(b)
   // `Number('')` is 0, so a blank must not pass for a number here
   if (a.trim() && b.trim() && Number.isFinite(x) && Number.isFinite(y)) return x - y
-  return a.localeCompare(b)
+  /* The table's own language decides the collation, not the host machine's.
+     Turkish orders ç after c and ş after s rather than folding them together,
+     so a name column sorted on an English laptop would put Çetin in the wrong
+     place for the person reading it. Undefined keeps the host's own order, which
+     is what this did before there were two languages. */
+  return a.localeCompare(b, locale)
 }
 
 /**
@@ -243,11 +296,13 @@ function dragImage(
 function CellEditor({
   record,
   columnKey,
+  strings: t,
   onCommit,
   onCancel,
 }: {
   record: DataTableRecord
   columnKey: ColumnKey
+  strings: Strings
   onCommit: (value: string) => void
   onCancel: () => void
 }) {
@@ -271,7 +326,10 @@ function CellEditor({
       value={value}
       data-id={record.id}
       data-key={columnKey}
-      aria-label={`Edit ${COLUMN_LABELS[columnKey]}`}
+      /* The *stored* value is what is edited, not the read one — a date typed
+         into a Turkish table still goes back as `19 August, 2026`, which is what
+         the filters and the sort read. */
+      aria-label={t.editField(t.columns[columnKey])}
       onChange={(event) => setValue(event.target.value)}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
@@ -303,26 +361,30 @@ function CellEditor({
 function EnumPicker({
   columnKey,
   current,
+  strings: t,
   onPick,
 }: {
   columnKey: ColumnKey
   current: string
+  strings: Strings
   onPick: (value: string) => void
 }) {
   return (
     <div
       className="dt-status-pick"
       role="group"
-      aria-label={`Edit ${COLUMN_LABELS[columnKey]}`}
+      aria-label={t.editField(t.columns[columnKey])}
     >
       {(ENUM_OPTIONS[columnKey] ?? []).map((option) => (
         <button
           key={option}
           type="button"
           className={cx(option === current && 'dt-on')}
+          /* The value committed is `option`, the canonical one — only the word
+             on the button moves with the language. */
           onClick={() => onPick(option)}
         >
-          {option}
+          {readEnum(t, columnKey, option)}
         </button>
       ))}
     </div>
@@ -365,6 +427,8 @@ interface RecordRowProps extends RowCallbacks {
   zebra: boolean
   motion: boolean
   rowPosition: string
+  /** The dictionary in force, passed on to the cell editors and the pane. */
+  strings: Strings
   /** The cell rectangle, already clamped to the page, or null. */
   range: RangeRect | null
   /** The moving corner of that rectangle, when it is on this row. */
@@ -377,7 +441,7 @@ function RecordRow(props: RecordRowProps) {
   const {
     record, index, cols, selected, expanded, collapseHeight, entering, armed,
     confirming, dragging, editingKey, zebra, motion, rowPosition,
-    range, activeCol, tabCell,
+    strings: t, range, activeCol, tabCell,
   } = props
 
   // Narrowed once here so the cell loop below can read the bounds directly.
@@ -390,7 +454,7 @@ function RecordRow(props: RecordRowProps) {
       <button
         type="button"
         className="dt-pick"
-        title={`Edit ${COLUMN_LABELS[key]}`}
+        title={t.editField(t.columns[key])}
         onClick={() => props.onPickCell(record.id, key)}
       >
         {inner}
@@ -407,12 +471,14 @@ function RecordRow(props: RecordRowProps) {
         <EnumPicker
           columnKey={key}
           current={String(record[key])}
+          strings={t}
           onPick={(value) => props.onSetEnum(record.id, key, value)}
         />
       ) : (
         <CellEditor
           record={record}
           columnKey={key}
+          strings={t}
           onCommit={(value) => props.onCommitCell(record.id, key, value)}
           onCancel={props.onCancelEdit}
         />
@@ -426,7 +492,12 @@ function RecordRow(props: RecordRowProps) {
     if (key === 'status') {
       return wrap(
         key,
-        <span className={cx('dt-pill', PILL_CLASS[record.status])}>{record.status}</span>,
+        /* The class comes off the canonical value and the word off the
+           dictionary: `dt-success` has to keep painting the green pill whatever
+           the pill says. */
+        <span className={cx('dt-pill', PILL_CLASS[record.status])}>
+          {t.status[record.status]}
+        </span>,
       )
     }
 
@@ -437,7 +508,7 @@ function RecordRow(props: RecordRowProps) {
             type="button"
             className={cx('dt-chevron', expanded && 'dt-open')}
             aria-expanded={expanded}
-            aria-label="Toggle details"
+            aria-label={t.toggleDetails}
             onClick={(event) => props.onToggleExpand(record.id, event)}
           >
             <ChevronDownIcon />
@@ -450,7 +521,12 @@ function RecordRow(props: RecordRowProps) {
     // Address alone now: `email` was the other muted column and it has moved to
     // the detail pane. A season is a first-class value, not a secondary one.
     const muted = key === 'address'
-    return wrap(key, <span className={cx('dt-cell-text', muted && 'dt-muted')}>{record[key]}</span>)
+    return wrap(
+      key,
+      <span className={cx('dt-cell-text', muted && 'dt-muted')}>
+        {readCell(t, key, String(record[key]))}
+      </span>,
+    )
   }
 
   /* The action cell has two states. Normally: edit, delete. Awaiting a delete
@@ -462,8 +538,8 @@ function RecordRow(props: RecordRowProps) {
       <button
         type="button"
         className="dt-icon-btn dt-confirm"
-        title="Confirm delete"
-        aria-label="Confirm delete"
+        title={t.confirmDelete}
+        aria-label={t.confirmDelete}
         onClick={() => props.onConfirmDelete(record.id)}
       >
         <DoneIcon />
@@ -471,8 +547,8 @@ function RecordRow(props: RecordRowProps) {
       <button
         type="button"
         className="dt-icon-btn dt-cancel"
-        title="Keep this record"
-        aria-label="Cancel delete"
+        title={t.keepRecord}
+        aria-label={t.cancelDelete}
         onClick={props.onCancelDelete}
       >
         <CrossIcon />
@@ -484,8 +560,8 @@ function RecordRow(props: RecordRowProps) {
         type="button"
         className={cx('dt-icon-btn', 'dt-edit', armed && 'dt-armed')}
         aria-pressed={armed}
-        title={armed ? 'Done editing' : 'Edit record — then pick a field'}
-        aria-label={armed ? 'Done editing' : 'Edit record'}
+        title={armed ? t.doneEditing : t.editRecordHint}
+        aria-label={armed ? t.doneEditing : t.editRecord}
         onClick={() => props.onArm(record)}
       >
         {armed ? <DoneIcon /> : <PencilIcon />}
@@ -493,8 +569,8 @@ function RecordRow(props: RecordRowProps) {
       <button
         type="button"
         className="dt-icon-btn dt-del"
-        title="Delete record"
-        aria-label="Delete record"
+        title={t.deleteRecord}
+        aria-label={t.deleteRecord}
         onClick={() => props.onRequestDelete(record.id)}
       >
         <TrashIcon />
@@ -525,8 +601,8 @@ function RecordRow(props: RecordRowProps) {
             tabIndex={0}
             draggable={!armed}
             data-dt-grip="row"
-            title="Drag to reorder row"
-            aria-label={`Reorder ${record.name}, ${rowPosition}. Hold Alt and press Arrow Up or Arrow Down to move it.`}
+            title={t.dragRow}
+            aria-label={t.reorderRow(record.name, rowPosition)}
             onKeyDown={(event) => props.onGripKeyDown(event, record.id)}
           >
             ⠿
@@ -537,7 +613,7 @@ function RecordRow(props: RecordRowProps) {
             type="button"
             className={cx('dt-check-box', selected && 'dt-on')}
             aria-pressed={selected}
-            aria-label={`Select ${record.name}`}
+            aria-label={t.selectRow(record.name)}
             onClick={() => props.onToggleSelect(record.id)}
           >
             {selected ? <CheckIcon /> : null}
@@ -576,6 +652,7 @@ function RecordRow(props: RecordRowProps) {
         <DetailPane
           record={record}
           colSpan={cols.length + 3}
+          strings={t}
           animateIn={entering}
           collapseHeight={collapseHeight}
           motion={motion}
@@ -598,6 +675,7 @@ function DraftRow({
   editingEnumKey,
   invalid,
   focusToken,
+  strings: t,
   onPatch,
   onPickEnum,
   onSetEnum,
@@ -610,6 +688,7 @@ function DraftRow({
   editingEnumKey: ColumnKey | null
   invalid: boolean
   focusToken: number
+  strings: Strings
   onPatch: (patch: Partial<DraftRecord>) => void
   onPickEnum: (key: ColumnKey) => void
   onSetEnum: (key: ColumnKey, value: string) => void
@@ -647,22 +726,23 @@ function DraftRow({
                   <EnumPicker
                     columnKey={key}
                     current={draft[key]}
+                    strings={t}
                     onPick={(value) => onSetEnum(key, value)}
                   />
                 ) : (
                   <button
                     type="button"
                     className="dt-pick"
-                    title={`Set ${COLUMN_LABELS[key]}`}
+                    title={t.setField(t.columns[key])}
                     onClick={() => onPickEnum(key)}
                   >
                     {/* The pill is status's alone, as in a record row. */}
                     {key === 'status' ? (
                       <span className={cx('dt-pill', PILL_CLASS[draft.status])}>
-                        {draft.status}
+                        {t.status[draft.status]}
                       </span>
                     ) : (
-                      <span className="dt-cell-text">{draft[key]}</span>
+                      <span className="dt-cell-text">{readEnum(t, key, draft[key])}</span>
                     )}
                   </button>
                 )}
@@ -682,8 +762,8 @@ function DraftRow({
                 type="text"
                 data-key={key}
                 value={draft[key]}
-                placeholder={COLUMN_LABELS[key]}
-                aria-label={COLUMN_LABELS[key]}
+                placeholder={t.columns[key]}
+                aria-label={t.columns[key]}
                 onChange={(event) => onPatch({ [key]: event.target.value } as Partial<DraftRecord>)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -700,8 +780,8 @@ function DraftRow({
             <button
               type="button"
               className="dt-icon-btn dt-save"
-              title="Save record"
-              aria-label="Save record"
+              title={t.saveRecord}
+              aria-label={t.saveRecord}
               onClick={onSave}
             >
               <DoneIcon />
@@ -709,8 +789,8 @@ function DraftRow({
             <button
               type="button"
               className="dt-icon-btn dt-cancel"
-              title="Discard record"
-              aria-label="Discard record"
+              title={t.discardRecord}
+              aria-label={t.discardRecord}
               onClick={onCancel}
             >
               <CrossIcon />
@@ -739,8 +819,12 @@ export function DataTable(props: DataTableProps) {
     metrics: initialMetrics,
     onMetricsChange,
     zebraRows = true,
-    title = 'Data table',
-    kicker = 'Records / Directory',
+    locale: controlledLocale,
+    defaultLocale = 'en',
+    onLocaleChange,
+    showLanguageSwitch = true,
+    title,
+    kicker,
     showHeader = true,
     logoSrc = ALP_LOGO_DATA_URI,
     motion: motionPreference = 'auto',
@@ -758,6 +842,48 @@ export function DataTable(props: DataTableProps) {
   )
   const controlled = controlledRecords !== undefined
   const records = controlled ? controlledRecords : internalRecords
+
+  /* ---- the language ------------------------------------------------- *
+   * Controlled the same way the records are: pass `locale` and the switch only
+   * reports the press, leave it off and this owns the choice. It is deliberately
+   * *not* in the reducer — nothing in the table's state depends on it. Sort
+   * order, the page, the selection, the chips and the metric preferences are all
+   * keyed by canonical values, so a change of language re-renders the words and
+   * touches nothing else. That is the whole point of the split in `i18n.ts`, and
+   * it is what lets the switch be safe to press mid-edit.
+   * ------------------------------------------------------------------ */
+  const [internalLocale, setInternalLocale] = useState<Locale>(defaultLocale)
+  const locale = controlledLocale ?? internalLocale
+  const t = stringsFor(locale)
+  const localeTag = LOCALE_TAGS[locale]
+  /* One dictionary object per language, so `t` is referentially stable and safe
+     in a dependency array. The ref is for the effects that must *not* list it:
+     the export box's focus effect would re-run and yank the caret back to the
+     start if the language changed while the box was open. */
+  const stringsRef = useRef(t)
+  stringsRef.current = t
+
+  const pickLocale = (next: Locale) => {
+    if (controlledLocale === undefined) setInternalLocale(next)
+    onLocaleChange?.(next)
+    // Announced because nothing else says so out loud: every label on screen has
+    // just changed, and a screen reader user gets no repaint to notice.
+    setAnnouncement(stringsFor(next).languageSet(LOCALE_NAMES[next]))
+  }
+
+  /* The head is the language's own word for the screen unless the host named
+     it. Read through the dictionary rather than defaulted in the destructure
+     above, so a host that passes nothing follows the switch. */
+  const headTitle = title ?? t.title
+  const headKicker = kicker ?? t.kicker
+
+  /* Every language's version of the title, to hold the line's width still —
+     see `.dt-title-set` in the stylesheet for what is being bought and what it
+     costs. Nothing to reserve in the two cases the width cannot change: a host
+     that named the title has one string for all of them, and with no switch
+     there is nothing after the title to be pushed. */
+  const titleGhosts =
+    showLanguageSwitch && title === undefined ? LOCALES.map((at) => STRINGS[at].title) : null
 
   const commitRecords = useCallback(
     (next: DataTableRecord[]) => {
@@ -839,7 +965,13 @@ export function DataTable(props: DataTableProps) {
 
   /* ---- derive: filter (conditions, then query) -> sort -> paginate -> slice ---- */
   const filtered = useMemo(() => {
-    const q = state.query.trim().toLowerCase()
+    /* `toLocaleLowerCase`, and the cell below folded the same way. Turkish is
+       the reason: `'İSTANBUL'.toLowerCase()` is an i with a *combining dot*,
+       which never equals a typed `i`, so a search for "istanbul" found nothing
+       in a column that plainly held it. Folding both sides with the table's own
+       tag is the fix, and it costs English nothing — `en-GB` folds exactly as
+       the unqualified method does. */
+    const q = state.query.trim().toLocaleLowerCase(localeTag)
 
     const list = records.filter((r) => {
       // PORT ADDITION: the dock's chips, ANDed, in place of the prototype's one
@@ -852,7 +984,7 @@ export function DataTable(props: DataTableProps) {
       // searches for, so the query stays on the three text fields — `email`
       // among them, which is still on the record now that it shows in the
       // detail pane rather than in a column.
-      return `${r.name} ${r.email} ${r.address}`.toLowerCase().includes(q)
+      return `${r.name} ${r.email} ${r.address}`.toLocaleLowerCase(localeTag).includes(q)
     })
 
     if (!state.sort) return list
@@ -860,8 +992,12 @@ export function DataTable(props: DataTableProps) {
     const { key, dir } = state.sort
     return list
       .slice()
-      .sort((a, b) => compareCells(String(a[key]), String(b[key])) * (dir === 'asc' ? 1 : -1))
-  }, [records, state.conditions, state.query, state.sort])
+      .sort(
+        (a, b) =>
+          compareCells(String(a[key]), String(b[key]), localeTag) *
+          (dir === 'asc' ? 1 : -1),
+      )
+  }, [records, state.conditions, state.query, state.sort, localeTag])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / rowsPerPage))
   const page = Math.min(state.page, pageCount - 1)
@@ -943,31 +1079,33 @@ export function DataTable(props: DataTableProps) {
 
   /**
    * What the flow block says about the rectangle — a total, a mean, the share
-   * of it reading "Success". The rectangle's own cells decide *which* of those
-   * it is: they are read, their category worked out, and that category's
-   * preference answers. `null` when they have no one category at all (a column
-   * of names, a rectangle half counts and half statuses), and the block then
-   * stays away. See metrics.ts.
+   * of it reading "Success", or all three at once. The rectangle's own cells
+   * decide *which* of those it is: they are read, their category worked out,
+   * and every metric that category is set to answers. `null` when they have no
+   * one category at all (a column of names, a rectangle half counts and half
+   * statuses), and the block then stays away. See metrics.ts.
    */
   const reading = useMemo<Reading | null>(() => {
-    // The whole column is read over `filtered`, so the figure covers the pages
+    // The whole column is read over `filtered`, so the figures cover the pages
     // the reader cannot see — which is the reason to have taken it.
     if (wholeColumnRect) {
-      const result = rangeMetric(filtered, state.cols, wholeColumnRect, state.metrics)
-      return result && { result, allPages: pageCount > 1 }
+      const answer = rangeMetrics(filtered, state.cols, wholeColumnRect, state.metrics)
+      return answer && { ...answer, allPages: pageCount > 1 }
     }
     if (!rangeBox) return null
-    const result = rangeMetric(visible, state.cols, rangeBox, state.metrics)
-    return result && { result, allPages: false }
+    const answer = rangeMetrics(visible, state.cols, rangeBox, state.metrics)
+    return answer && { ...answer, allPages: false }
   }, [wholeColumnRect, rangeBox, filtered, visible, state.cols, state.metrics, pageCount])
 
   /**
-   * The metric the block is displaying, and the section of the selector that is
-   * speaking for it. Both fall back with the block: with nothing selected the
-   * button names the number preference and no section is marked.
+   * The metrics the block is displaying, and the section of the selector that
+   * is speaking for them. Both fall back with the block: with nothing selected
+   * the button names the number preferences and no section is marked. The
+   * category is taken off the reading rather than derived again — one scan of
+   * the cells, and no way for the mark and the figures to disagree.
    */
-  const inForce = reading ? metricCategory(reading.result.metric) : null
-  const showing = metricInForce(state.metrics, reading?.result ?? null)
+  const inForce = reading?.category ?? null
+  const showing = metricsInForce(state.metrics, reading)
 
   /**
    * An answer that has gone away still has to be on screen to fade out, so the
@@ -997,6 +1135,32 @@ export function DataTable(props: DataTableProps) {
   useEffect(() => () => window.clearTimeout(fadeTimer.current), [])
 
   const shownReading = reading ?? fadingReading
+
+  /* The flow block scrolls rather than growing past the toolbar. Which edge has
+     more behind it is what the stylesheet fades, and whether there is any edge
+     at all is what decides the strip is worth a tab stop — see `.dt-sum-strip`
+     for both. Measured on the readings changing, on the window changing and on
+     the strip being scrolled. No ResizeObserver, for the reason `FilterDock`
+     gives: the strip only changes width with the viewport, and the observer is
+     not in the test environment's DOM. */
+  const flowStrip = useRef<HTMLDivElement | null>(null)
+  const [flowMore, setFlowMore] = useState<'start' | 'end' | 'both' | null>(null)
+
+  const measureFlow = useCallback(() => {
+    const el = flowStrip.current
+    if (!el) return
+    // A pixel of slack, the same the dock's rail measures with: sub-pixel
+    // layout reports a strip that fits exactly as overflowing.
+    const before = el.scrollLeft > 1
+    const after = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setFlowMore(before && after ? 'both' : before ? 'start' : after ? 'end' : null)
+  }, [])
+
+  useEffect(() => {
+    measureFlow()
+    window.addEventListener('resize', measureFlow)
+    return () => window.removeEventListener('resize', measureFlow)
+  }, [measureFlow, shownReading])
 
   // One tab stop for the whole grid: the moving corner owns it, or the first
   // cell when nothing is selected yet.
@@ -1352,7 +1516,7 @@ export function DataTable(props: DataTableProps) {
 
     moveRow(id, neighbour.id)
     const record = visible[at]
-    announce(`${record.name} moved to position ${at + step + 1} of ${visible.length}.`)
+    announce(t.rowMoved(record.name, at + step + 1, visible.length))
   }
 
   const onColGripKeyDown = (event: KeyboardEvent<HTMLElement>, key: ColumnKey) => {
@@ -1366,9 +1530,7 @@ export function DataTable(props: DataTableProps) {
     if (at < 0 || !neighbour) return
 
     moveColumn(key, neighbour)
-    announce(
-      `${COLUMN_LABELS[key]} column moved to position ${at + step + 1} of ${state.cols.length}.`,
-    )
+    announce(t.columnMoved(t.columns[key], at + step + 1, state.cols.length))
   }
 
   /* ---- cell range: the Excel-style rectangle ------------------------ *
@@ -1389,11 +1551,11 @@ export function DataTable(props: DataTableProps) {
     if (!rect) return
     // The panel itself is aria-hidden, so this is the only way the readout
     // reaches anyone driving the grid from the keyboard — and it says whichever
-    // metric these cells actually put in force, in the sentence case a screen
-    // reader can read (the panel's tag is upper case, which one spells out
+    // metrics these cells actually put in force, in the sentence case a screen
+    // reader can read (the panel's tags are upper case, which one spells out
     // letter by letter). The full stop is the caller's, as it always was.
-    const answer = rangeMetric(visible, state.cols, rect, state.metrics)
-    const said = describeRange(rect, state.cols, visible.length)
+    const answer = rangeMetrics(visible, state.cols, rect, state.metrics, t)
+    const said = describeRange(rect, state.cols, visible.length, t)
     announce(answer ? `${said} ${answer.speech}.` : said)
   }
 
@@ -1413,8 +1575,8 @@ export function DataTable(props: DataTableProps) {
     dispatch({ type: 'selectColumn', key })
 
     const rect = { top: 0, bottom: filtered.length - 1, left: index, right: index }
-    const answer = rangeMetric(filtered, state.cols, rect, state.metrics)
-    const said = describeWholeColumn(key, filtered.length, pageCount)
+    const answer = rangeMetrics(filtered, state.cols, rect, state.metrics, t)
+    const said = describeWholeColumn(key, filtered.length, pageCount, t)
     announce(answer ? `${said} ${answer.speech}.` : said)
   }
 
@@ -1526,11 +1688,7 @@ export function DataTable(props: DataTableProps) {
       rangeText(rows, state.cols, rect),
       rangeHtml(rows, state.cols, rect),
     ).then((ok) => {
-      announce(
-        ok
-          ? `Copied ${cells} cell${cells === 1 ? '' : 's'} to the clipboard.`
-          : 'The browser refused the copy.',
-      )
+      announce(ok ? t.copied(cells) : t.copyRefused)
     })
   }
 
@@ -1738,9 +1896,12 @@ export function DataTable(props: DataTableProps) {
         // any more — it is a detail-pane field now, filled in after the fact
         // like `owner` and `note` below it.
         email: '',
-        owner: 'Unassigned',
-        activity: 'Just now',
-        plan: 'Standard',
+        // Free text, so it is written in the language the record was made in
+        // and stays that way — unlike `status` and `favouriteSeason` above,
+        // which are canonical values the whole engine matches on.
+        owner: t.draftOwner,
+        activity: t.draftActivity,
+        plan: t.draftPlan,
         note: '',
       },
       ...records,
@@ -1835,11 +1996,11 @@ export function DataTable(props: DataTableProps) {
     setExporting({
       phase: 'working',
       step: 0,
-      csv: planCsv(plan),
+      csv: planCsv(plan, t.columns),
       records: plan.records,
-      name: defaultExportName(plan, title),
+      name: defaultExportName(plan, headTitle, t.columns),
     })
-    announce(`Preparing ${cells} cell${cells === 1 ? '' : 's'} for export.`)
+    announce(t.preparingExport(cells))
   }
 
   /**
@@ -1869,13 +2030,13 @@ export function DataTable(props: DataTableProps) {
     const ok = downloadCsv(filename, exporting.csv)
     endExport()
     if (ok) onExport?.(exporting.records)
-    announce(ok ? `Saved ${filename}.` : 'The browser refused the download.')
+    announce(ok ? t.exportSaved(filename) : t.downloadRefused)
   }
 
   const cancelExport = () => {
     if (!exporting || exporting.phase === 'closing') return
     endExport()
-    announce('Export cancelled.')
+    announce(t.exportCancelled)
   }
 
   // One interval per run, restarted only when the phase changes — the ticks
@@ -1917,7 +2078,7 @@ export function DataTable(props: DataTableProps) {
     input.focus()
     input.setSelectionRange(0, input.value.length, 'backward')
     input.scrollLeft = 0
-    setAnnouncement('Export ready. Name the file and press Enter to save it.')
+    setAnnouncement(stringsRef.current.exportReady)
   }, [exporting?.phase])
 
   useEffect(() => () => window.clearTimeout(exportCloseTimer.current), [])
@@ -1976,16 +2137,18 @@ export function DataTable(props: DataTableProps) {
 
   // Same shape as the slider above: the reducer owns the value, the prop only
   // seeded it, and the host hears about every move. The cell rectangle survives
-  // this one — see KEEPS_RANGE in state.ts, without which setting a preference
+  // this one — see KEEPS_RANGE in state.ts, without which switching a metric on
   // would take away the very selection the block is reporting on.
   //
   // The next record is worked out here as well as in the reducer so the host
-  // can be handed it. `setMetricPref` is pure and returns its argument when
-  // nothing moves, which is also the no-op guard.
-  const setMetric = (next: MetricKey) => {
-    const prefs = setMetricPref(state.metrics, next)
+  // can be handed it. `toggleMetricPref` is pure and returns its argument when
+  // nothing moves, which is also the no-op guard — and "nothing moves" covers
+  // the press that would have emptied a category, which the panel marks
+  // `aria-disabled` but does not itself refuse.
+  const toggleMetric = (next: MetricKey) => {
+    const prefs = toggleMetricPref(state.metrics, next)
     if (prefs === state.metrics) return
-    dispatch({ type: 'setMetric', metric: next })
+    dispatch({ type: 'toggleMetric', metric: next })
     onMetricsChange?.(prefs)
   }
 
@@ -1994,26 +2157,55 @@ export function DataTable(props: DataTableProps) {
       ref={rootRef}
       className={cx('dt-root', cellSelection && 'dt-cell-select', selecting && 'dt-selecting', className)}
       style={rootStyle}
+      /* The whole subtree's language, which is what a screen reader picks its
+         voice from and what the browser hyphenates and spell-checks against.
+         On the root rather than on the header: the column labels, the chips and
+         the live region are all in it too. */
+      lang={locale}
       data-dt-motion={motionPreference}
       onKeyDown={onRootKeyDown}
     >
       {showHeader ? (
         <div className="dt-page-head">
           <div>
-            <div className="dt-kicker">{kicker}</div>
-            <h1>{title}</h1>
+            <div className="dt-kicker">{headKicker}</div>
+            {/* The switch sits on the title's own line, after it. It belongs to
+                the screen rather than to any one control on it, and the title is
+                the only thing on the page that is also about the whole screen —
+                so this is where a reader looking for "what language is this in"
+                looks first. Centred on the 44px heading's cap band in the
+                stylesheet, which is where its baseline used to put it. */}
+            <div className="dt-title-row">
+              <div className="dt-title-set">
+                <h1>{headTitle}</h1>
+                {/* A sibling of the heading, never a child of it: hiding these
+                    keeps them out of the accessibility tree but not out of
+                    `textContent`, and inside the `h1` they would make it read
+                    back as every language at once. */}
+                {titleGhosts ? (
+                  <span className="dt-title-ghost" aria-hidden="true">
+                    {titleGhosts.map((say) => (
+                      <span key={say}>{say}</span>
+                    ))}
+                  </span>
+                ) : null}
+              </div>
+              {showLanguageSwitch ? (
+                <LanguageSwitch value={locale} strings={t} onPick={pickLocale} />
+              ) : null}
+            </div>
           </div>
           <div className="dt-stats">
             <div>
-              <div className="dt-stat-label">Total</div>
+              <div className="dt-stat-label">{t.statTotal}</div>
               <div className="dt-stat-value">{records.length}</div>
             </div>
             <div>
-              <div className="dt-stat-label">Matching</div>
+              <div className="dt-stat-label">{t.statMatching}</div>
               <div className="dt-stat-value">{filtered.length}</div>
             </div>
             <div>
-              <div className="dt-stat-label">Selected</div>
+              <div className="dt-stat-label">{t.statSelected}</div>
               <div className="dt-stat-value">{selectedCount}</div>
             </div>
           </div>
@@ -2024,8 +2216,8 @@ export function DataTable(props: DataTableProps) {
         <input
           className="dt-search"
           type="text"
-          placeholder="Search name, email or address"
-          aria-label="Search records"
+          placeholder={t.searchPlaceholder}
+          aria-label={t.searchLabel}
           value={state.query}
           onChange={(event) => dispatch({ type: 'setQuery', query: event.target.value })}
         />
@@ -2044,11 +2236,11 @@ export function DataTable(props: DataTableProps) {
             was anywhere inside, including over +. The input names itself with
             aria-label instead, and the tag is decorative. */}
         <div className="dt-rows">
-          <span className="dt-rows-tag" aria-hidden="true">Rows</span>
+          <span className="dt-rows-tag" aria-hidden="true">{t.rowsTag}</span>
           <button
             type="button"
             className="dt-rows-step"
-            aria-label="Decrease rows per page"
+            aria-label={t.decreaseRows}
             disabled={rowsPerPage <= 1}
             onClick={() => setRowsPerPage(Math.max(1, rowsPerPage - 1))}
           >
@@ -2060,7 +2252,7 @@ export function DataTable(props: DataTableProps) {
             min={1}
             step={1}
             value={rowsPerPage}
-            aria-label="Rows per page"
+            aria-label={t.rowsPerPage}
             onChange={(event) => {
               const value = Number(event.target.value)
               if (value >= 1) setRowsPerPage(value)
@@ -2069,7 +2261,7 @@ export function DataTable(props: DataTableProps) {
           <button
             type="button"
             className="dt-rows-step"
-            aria-label="Increase rows per page"
+            aria-label={t.increaseRows}
             onClick={() => setRowsPerPage(rowsPerPage + 1)}
           >
             <StepUpIcon />
@@ -2082,22 +2274,53 @@ export function DataTable(props: DataTableProps) {
             anything. It sits after the spacer, so it appears and disappears in
             the gap without moving the buttons to its right. */}
         {shownReading ? (
-          <div className={cx('dt-sum', !reading && 'dt-out')} aria-hidden="true">
-            <span className="dt-sum-tag">{shownReading.result.tag}</span>
-            <span className="dt-sum-value">{shownReading.result.value}</span>
-            {/* A rate's "5 of 8". The parentheses belong to the panel rather
-                than to the engine's string — they are punctuation around a
-                number, not part of it. */}
-            {shownReading.result.note ? (
-              <span className="dt-sum-note">({shownReading.result.note})</span>
-            ) : null}
-            {/* PORT ADDITION: the scope, and only when it is not the obvious
-                one. A whole-column reading covers rows that are not on screen,
-                so a figure four times the size of the visible column needs to
-                say why — otherwise it reads as a bug. */}
-            {shownReading.allPages ? (
-              <span className="dt-sum-scope">all pages</span>
-            ) : null}
+          <div
+            className={cx('dt-sum', !reading && 'dt-out')}
+            data-dt-flow-more={flowMore ?? undefined}
+            /* Hidden exactly as it always was while the whole strip is on
+               screen: the figures are the live region's to say, not this
+               block's. What a strip too wide to show cannot be is hidden *and*
+               focusable, so when there is an edge to reach the slab comes back
+               into the tree and the strip below it takes the name — still with
+               nothing readable inside it. */
+            aria-hidden={flowMore ? undefined : true}
+          >
+            <div
+              className="dt-sum-strip"
+              ref={flowStrip}
+              onScroll={measureFlow}
+              tabIndex={flowMore ? 0 : undefined}
+              role={flowMore ? 'group' : undefined}
+              aria-label={flowMore ? t.flowStrip : undefined}
+            >
+              <span className="dt-sum-line" aria-hidden="true">
+                {/* One reading per metric the rectangle's kind is set to, in the
+                    cog panel's own order — so the strip grows rightwards as more
+                    are switched on, and never re-orders itself under the reader.
+                    Keyed by the metric rather than by position: the tag and the
+                    figure are one object, and a metric switched off in the middle
+                    must not hand its digits to its neighbour for a frame. */}
+                {shownReading.results.map((result) => (
+                  <span className="dt-sum-item" key={result.metric}>
+                    <span className="dt-sum-tag">{result.tag}</span>
+                    <span className="dt-sum-value">{result.value}</span>
+                    {/* A rate's "5 of 8". The parentheses belong to the panel
+                        rather than to the engine's string — they are punctuation
+                        around a number, not part of it. */}
+                    {result.note ? <span className="dt-sum-note">({result.note})</span> : null}
+                  </span>
+                ))}
+                {/* PORT ADDITION: the scope, and only when it is not the obvious
+                    one. A whole-column reading covers rows that are not on screen,
+                    so a figure four times the size of the visible column needs to
+                    say why — otherwise it reads as a bug. Once for the block and
+                    not once per metric: it qualifies the rectangle, which is the
+                    one thing every reading in the strip has in common. */}
+                {shownReading.allPages ? (
+                  <span className="dt-sum-scope">{t.allPages}</span>
+                ) : null}
+              </span>
+            </div>
           </div>
         ) : null}
 
@@ -2105,7 +2328,7 @@ export function DataTable(props: DataTableProps) {
             where "Reset order" did — the flow block beside it is the only thing
             in the toolbar it speaks for, and the two want to be read together.
             What it carries — in its name and its tooltip, since a cog has no
-            words — is the metric in force rather than a setting of its own, so
+            words — is the metrics in force rather than a setting of its own, so
             it tracks the selection: drag across counts and it says Sum, drag
             across statuses and it says Success rate, with nothing to set in
             between. */}
@@ -2113,14 +2336,15 @@ export function DataTable(props: DataTableProps) {
           prefs={state.metrics}
           value={showing}
           inForce={inForce}
-          onPick={setMetric}
+          onPick={toggleMetric}
+          strings={t}
         />
 
         <button
           type="button"
           className="dt-btn-primary"
-          title="New record"
-          aria-label="New record"
+          title={t.newRecord}
+          aria-label={t.newRecord}
           onClick={startDraft}
         >
           <PlusIcon />
@@ -2141,6 +2365,7 @@ export function DataTable(props: DataTableProps) {
         onToggleValue={(id, option) => dispatch({ type: 'toggleConditionValue', id, option })}
         onRemove={(id) => dispatch({ type: 'removeCondition', id })}
         onClearAll={() => dispatch({ type: 'clearConditions' })}
+        strings={t}
       />
 
       {children}
@@ -2174,7 +2399,7 @@ export function DataTable(props: DataTableProps) {
                   type="button"
                   className="dt-check-box"
                   aria-pressed={allSelected}
-                  aria-label="Select all rows on this page"
+                  aria-label={t.selectAllOnPage}
                   onClick={() =>
                     dispatch({
                       type: 'setSelection',
@@ -2219,8 +2444,8 @@ export function DataTable(props: DataTableProps) {
                         tabIndex={0}
                         draggable
                         data-dt-grip="col"
-                        title="Drag to reorder the column, or into the filter dock to filter by it"
-                        aria-label={`Reorder ${COLUMN_LABELS[key]} column. Hold Alt and press Arrow Left or Arrow Right to move it. To filter by it, drag it into the filter dock or use the dock's Add filter button.`}
+                        title={t.dragColumn}
+                        aria-label={t.reorderColumn(t.columns[key])}
                         onKeyDown={(event) => onColGripKeyDown(event, key)}
                       >
                         ⠿
@@ -2238,19 +2463,19 @@ export function DataTable(props: DataTableProps) {
                         className="dt-th-label"
                         title={
                           cellSelection
-                            ? `Triple click to select the whole ${COLUMN_LABELS[key]} column`
+                            ? t.tripleClickColumn(t.columns[key])
                             : undefined
                         }
                       >
-                        {COLUMN_LABELS[key]}
+                        {t.columns[key]}
                       </span>
                       {/* The caret alone sorts. It is padded out to a real hit
                           area in the stylesheet, the way the grip is. */}
                       <button
                         type="button"
                         className="dt-th-sort"
-                        title={`Sort by ${COLUMN_LABELS[key]}`}
-                        aria-label={`Sort by ${COLUMN_LABELS[key]}`}
+                        title={t.sortBy(t.columns[key])}
+                        aria-label={t.sortBy(t.columns[key])}
                         /* The accessible name stays the button's one job. The
                            second gesture is advertised the standard way
                            instead — a name that recited it would be read out
@@ -2268,7 +2493,7 @@ export function DataTable(props: DataTableProps) {
                 )
               })}
 
-              <th className="dt-col-action">Action</th>
+              <th className="dt-col-action">{t.action}</th>
             </tr>
           </thead>
 
@@ -2286,6 +2511,7 @@ export function DataTable(props: DataTableProps) {
               }}
               onPickEnum={(key) => dispatch({ type: 'pickCell', id: DRAFT_ID, key })}
               onSetEnum={(key, value) => dispatch({ type: 'setDraftEnum', key, value })}
+              strings={t}
               onSave={saveDraft}
               onCancel={() => dispatch({ type: 'clearDraft' })}
             />
@@ -2307,7 +2533,8 @@ export function DataTable(props: DataTableProps) {
               editingKey={state.editing?.id === record.id ? state.editing.key : null}
               zebra={zebraRows}
               motion={motion}
-              rowPosition={`row ${index + 1} of ${visible.length}`}
+              rowPosition={t.rowPosition(index + 1, visible.length)}
+              strings={t}
               range={paintBox}
               activeCol={activeCell?.row === index ? activeCell.col : null}
               tabCell={tabCell}
@@ -2335,16 +2562,21 @@ export function DataTable(props: DataTableProps) {
       {/* a draft row still counts as something on screen */}
       {visible.length === 0 && !state.draft ? (
         <div className="dt-empty">
-          <div className="dt-empty-title">No records match</div>
-          <div className="dt-empty-body">
-            Clear the search field, or loosen a filter in the dock above.
-          </div>
+          <div className="dt-empty-title">{t.emptyTitle}</div>
+          <div className="dt-empty-body">{t.emptyBody}</div>
         </div>
       ) : null}
 
       <div className="dt-foot">
+        {/* The count reads round the range rather than after it: "Showing 1–8
+            of 24 entries" in English, "24 kayıttan 1–8 gösteriliyor" in Turkish,
+            where the verb is last and the total comes first. A template with one
+            placeholder cannot say both, so the dictionary hands back the two
+            halves and this puts the <strong> between them. */}
         <div className="dt-foot-count">
-          Showing <strong>{rangeLabel}</strong> of {filtered.length} entries
+          {t.footCount(filtered.length).before}
+          <strong>{rangeLabel}</strong>
+          {t.footCount(filtered.length).after}
         </div>
 
         {/* PORT: the selection actions and the pager, as one right-hand group.
@@ -2364,7 +2596,7 @@ export function DataTable(props: DataTableProps) {
               disabled={!canExport}
               onClick={startExport}
             >
-              Export
+              {t.exportLabel}
             </button>
 
             {/* PORT ADDITION: the export's own strip, where Archive stood
@@ -2391,7 +2623,7 @@ export function DataTable(props: DataTableProps) {
                 <div
                   className="dt-export-bar"
                   role="progressbar"
-                  aria-label="Exporting"
+                  aria-label={t.exporting}
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={Math.round((exporting.step / EXPORT_STEPS) * 100)}
@@ -2403,7 +2635,7 @@ export function DataTable(props: DataTableProps) {
                     type="text"
                     className="dt-export-input"
                     value={exporting.name}
-                    aria-label="Name the exported CSV file"
+                    aria-label={t.exportNameLabel}
                     spellCheck={false}
                     autoComplete="off"
                     onChange={(event) => {
@@ -2423,8 +2655,8 @@ export function DataTable(props: DataTableProps) {
                   <button
                     type="button"
                     className="dt-export-act dt-export-save"
-                    title={`Save ${csvFileName(exporting.name)}`}
-                    aria-label={`Save ${csvFileName(exporting.name)}`}
+                    title={t.saveFile(csvFileName(exporting.name))}
+                    aria-label={t.saveFile(csvFileName(exporting.name))}
                     onClick={saveExport}
                   >
                     <DoneIcon />
@@ -2436,8 +2668,8 @@ export function DataTable(props: DataTableProps) {
                   <button
                     type="button"
                     className="dt-export-act dt-export-cancel"
-                    title="Cancel the export"
-                    aria-label="Cancel the export"
+                    title={t.cancelExport}
+                    aria-label={t.cancelExport}
                     onClick={cancelExport}
                   >
                     <CrossIcon />
@@ -2451,22 +2683,52 @@ export function DataTable(props: DataTableProps) {
             </div>
           </div>
 
-          <div className="dt-pager">
+          {/* PORT ADDITION: a <nav>, and a windowed one.
+
+              The landmark is what a screen reader user jumps to; "Pagination"
+              is the standard name for it, and the strip had none. The window is
+              PAGE_WINDOW numbers wide — see `pageWindow` — with the four jumps
+              around it: first, previous, next, last. The two outer ones are the
+              windowing's other half. Once the strip stops showing every page,
+              "go to the last one" stops being a thing you can point at, and a
+              1000-row table with no way to reach page 125 in one press would be
+              a worse pager than the one that overflowed. */}
+          <nav className="dt-pager" aria-label={t.pagination}>
             <button
               type="button"
               className="dt-pager-nav"
+              aria-label={t.firstPage}
+              title={t.firstPage}
+              disabled={page === 0}
+              onClick={() => goToPage(0)}
+            >
+              {/* The glyph is decoration: the name is on the button. Guillemets
+                  rather than doubled ASCII angles, to match the ‹ › the strip
+                  already used and the ▼ the sort caret and every list in the
+                  port draw. */}
+              <span aria-hidden="true">«</span>
+            </button>
+            <button
+              type="button"
+              className="dt-pager-nav"
+              aria-label={t.prevPage}
+              title={t.prevPage}
               disabled={page === 0}
               onClick={() => goToPage(page - 1)}
             >
-              ‹ Prev
+              <span aria-hidden="true">‹</span>
             </button>
-            <span style={{ display: 'flex', gap: 6 }}>
-              {Array.from({ length: pageCount }, (_, i) => (
+            <span className="dt-pager-nums">
+              {pageWindow(page, pageCount).map((i) => (
                 <button
                   key={i}
                   type="button"
                   className={cx('dt-pager-num', i === page && 'dt-active')}
+                  /* `aria-current="page"` is what marks the one you are on; the
+                     name says which of how many, because a bare "7" in a window
+                     of five gives no clue how much is either side of it. */
                   aria-current={i === page ? 'page' : undefined}
+                  aria-label={t.pageNumber(i + 1, pageCount)}
                   onClick={() => goToPage(i)}
                 >
                   {i + 1}
@@ -2476,12 +2738,24 @@ export function DataTable(props: DataTableProps) {
             <button
               type="button"
               className="dt-pager-nav"
+              aria-label={t.nextPage}
+              title={t.nextPage}
               disabled={page >= pageCount - 1}
               onClick={() => goToPage(page + 1)}
             >
-              Next ›
+              <span aria-hidden="true">›</span>
             </button>
-          </div>
+            <button
+              type="button"
+              className="dt-pager-nav"
+              aria-label={t.lastPage}
+              title={t.lastPage}
+              disabled={page >= pageCount - 1}
+              onClick={() => goToPage(pageCount - 1)}
+            >
+              <span aria-hidden="true">»</span>
+            </button>
+          </nav>
         </div>
       </div>
 

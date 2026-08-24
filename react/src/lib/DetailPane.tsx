@@ -13,11 +13,15 @@
  * because the row it belongs to can be detached mid-animation.
  */
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { EN, type Strings } from './i18n'
 import type { DataTableRecord } from './types'
 
 export interface DetailPaneProps {
   record: DataTableRecord
   colSpan: number
+  /** The dictionary in force. Only the six pane labels come out of it — every
+      value below is the record's own and is never translated. */
+  strings?: Strings
   /** Play the enter animation — set only by the click that opened the row. */
   animateIn: boolean
   /** Present while the pane is animating out: the height it was measured at. */
@@ -39,6 +43,7 @@ function Pane({ label, value }: { label: string; value: string }) {
 export function DetailPane({
   record,
   colSpan,
+  strings: t = EN,
   animateIn,
   collapseHeight,
   motion,
@@ -109,21 +114,21 @@ export function DetailPane({
             else if (entering) callbacks.current.onEnterEnd()
           }}
         >
-          <Pane label="Record ID" value={record.id} />
-          <Pane label="Owner" value={record.owner} />
+          <Pane label={t.paneRecordId} value={record.id} />
+          <Pane label={t.paneOwner} value={record.owner} />
           {/* PORT ADDITION: email lost its table column to `favouriteSeason` and
               lives here now. It sits on row 1 so the short values stay together
               and the note keeps a full row to itself. */}
-          <Pane label="Email" value={record.email} />
-          <Pane label="Plan" value={record.plan} />
-          <Pane label="Last activity" value={record.activity} />
+          <Pane label={t.paneEmail} value={record.email} />
+          <Pane label={t.panePlan} value={record.plan} />
+          <Pane label={t.paneActivity} value={record.activity} />
           {/* Was `dt-pane-wide` (span 4) back when four panes filled row 1 exactly.
               Email makes five, so the note now shares row 2 with Last activity and
               spans the 3 remaining columns — a span of 4 would push it to its own
               row and leave three empty cells showing through the 1px var(--dt-n300)
               grid gaps as a ragged strip. */}
           <div className="dt-pane dt-pane-rest">
-            <div className="dt-pane-label">Note</div>
+            <div className="dt-pane-label">{t.paneNote}</div>
             <div className="dt-pane-note">{record.note}</div>
           </div>
         </div>

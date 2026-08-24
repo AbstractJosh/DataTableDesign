@@ -1,5 +1,37 @@
-export { DataTable, default } from './lib/DataTable'
+export { DataTable, default, pageWindow } from './lib/DataTable'
 export { createDemoRecords, DEMO_RECORDS } from './lib/demoData'
+export { LanguageSwitch, type LanguageSwitchProps } from './lib/LanguageSwitch'
+/**
+ * The screen's copy, in both languages.
+ *
+ * `STRINGS` and the two dictionaries are the whole of what the table renders,
+ * so a host can read a label back (`STRINGS.tr.columns.status`), check a
+ * translation, or hand `Strings` to its own chrome so the page around the table
+ * says the same words. `readCell` and `readEnum` are how a *value* is read in a
+ * language — the records themselves stay canonical English, which is the line
+ * `lib/i18n.ts` explains at length.
+ *
+ * `Strings` is exported as a type but the object is not extensible per-key from
+ * outside: a third language is a new entry in `STRINGS`, in this package, and
+ * the compiler then makes every missing string an error rather than a blank.
+ */
+export {
+  EN,
+  LOCALES,
+  LOCALE_NAMES,
+  LOCALE_SHORT,
+  LOCALE_TAGS,
+  STRINGS,
+  TR,
+  formatDate,
+  isLocale,
+  readCell,
+  readEnum,
+  stringsFor,
+  type Locale,
+  type Strings,
+  type WrappedText,
+} from './lib/i18n'
 export { ALP_LOGO_DATA_URI } from './lib/logo'
 export type { CellRange, CellRef, RangeRect } from './lib/cellRange'
 /**
@@ -43,13 +75,13 @@ export {
  * that stores preferences between visits has to be able to build, validate and
  * name them without the component mounted. `normaliseMetricPrefs` is the guard
  * that runs on the way in, so a host can put its own storage through it first;
- * `setMetricPref` files a key under its own category; `metricFor` reads one back
- * out; the grouped list and the labels are for a host offering its own control
- * over the same choice.
+ * `toggleMetricPref` switches a key on or off under its own category;
+ * `metricsFor` reads a category's set back out; the grouped list and the labels
+ * are for a host offering its own control over the same choice.
  *
- * `rangeMetric`, `rangeCategory` and `metricInForce` stay internal. They answer
- * questions about a cell rectangle, and the rectangle is a view-level thing the
- * host is never handed — there is nothing it could pass them.
+ * `rangeMetrics`, `rangeCategory` and `metricsInForce` stay internal. They
+ * answer questions about a cell rectangle, and the rectangle is a view-level
+ * thing the host is never handed — there is nothing it could pass them.
  */
 export {
   DEFAULT_METRIC_PREFS,
@@ -59,17 +91,20 @@ export {
   NUMERIC_METRICS,
   isMetricKey,
   metricCategory,
-  metricFor,
+  metricGroups,
   metricLabel,
+  metricNames,
+  metricsFor,
   normaliseMetricPrefs,
   parseRateMetric,
   rateMetricKey,
-  setMetricPref,
+  toggleMetricPref,
   type MetricCategory,
   type MetricGroup,
   type MetricKey,
   type MetricOption,
   type MetricPrefs,
+  type MetricPrefsSeed,
   type NumericMetricKey,
   type RateMetric,
   type RateMetricKey,

@@ -19,6 +19,7 @@
  * The rule that makes the whole feature usable lives in `isActive`: a condition
  * with no operand yet matches everything. Read it before changing anything here.
  */
+import { EN, readEnum, type Strings } from './i18n'
 import {
   SEASONS,
   STATUSES,
@@ -73,6 +74,12 @@ export const OPS_FOR_TYPE: Record<ColumnType, readonly FilterOp[]> = {
  * Sentence case, and phrased to read left to right after the column label:
  * "Solved cases · is at least 100". The chip uppercases it in CSS, so these
  * stay lower case here.
+ *
+ * The English reference, and the exported one — a host reading a condition back
+ * gets a stable word for each operator whatever the table is currently set to.
+ * What the chip renders is `Strings.ops`, which `i18n.ts` keeps in step with
+ * this table by declaring the same `Record<FilterOp, string>`; adding an
+ * operator here fails to compile until every locale has named it.
  */
 export const OP_LABELS: Record<FilterOp, string> = {
   contains: 'contains',
@@ -157,20 +164,30 @@ export function isActive(c: FilterCondition): boolean {
   return true
 }
 
-/** The chip's value text. Callers uppercase it in CSS — do not shout here. */
-export function describeCondition(c: FilterCondition): string {
-  if (!isActive(c)) return 'Any'
+/**
+ * The chip's value text. Callers uppercase it in CSS — do not shout here.
+ *
+ * The dictionary is optional and defaults to English, so a host calling this to
+ * label its own copy of a condition is unaffected. Three things in it are the
+ * locale's rather than this function's: the operator word, the enum values
+ * (which are canonical English on the record and read as the language on
+ * screen), and the whole shape of `between` — English puts the operator first
+ * and joins with "and", Turkish puts the postposition last ("1 ile 5
+ * arasında"), so `betweenText` builds that clause rather than this.
+ */
+export function describeCondition(c: FilterCondition, t: Strings = EN): string {
+  if (!isActive(c)) return t.any
 
   if (conditionType(c) === 'enum') {
-    const list = c.values.join(', ')
-    return c.op === 'isNoneOf' ? `None of: ${list}` : list
+    const list = c.values.map((value) => readEnum(t, c.key, value)).join(', ')
+    return c.op === 'isNoneOf' ? t.noneOf(list) : list
   }
 
   if (c.op === 'between') {
-    return `${OP_LABELS[c.op]} ${c.value.trim()} and ${c.value2.trim()}`
+    return t.betweenText(c.value.trim(), c.value2.trim())
   }
 
-  return `${OP_LABELS[c.op]} ${c.value.trim()}`
+  return `${t.ops[c.op]} ${c.value.trim()}`
 }
 
 /* ---- the month table ---------------------------------------------- */

@@ -6,7 +6,8 @@
  */
 import type { CSSProperties, ReactNode } from 'react'
 
-import type { MetricPrefs } from './metrics'
+import type { Locale } from './i18n'
+import type { MetricPrefs, MetricPrefsSeed } from './metrics'
 
 export type RecordStatus = 'Success' | 'In progress' | 'Failed'
 
@@ -77,27 +78,62 @@ export interface DataTableProps {
   rowsPerPage?: number
   onRowsPerPageChange?: (rows: number) => void
   /**
-   * What each *kind* of cell content should read as in the flow block: a metric
-   * for numbers, one for each enum column's values. Which of them a given cell
-   * selection uses is not set here and is not settable — the rectangle decides,
-   * by what is in it. Drag across counts and the block reads the `number`
-   * preference; drag across statuses and the same block reads the `status` one.
+   * What each *kind* of cell content should read as in the flow block: the
+   * metrics for numbers, the metrics for each enum column's values. Which set a
+   * given cell selection uses is not set here and is not settable — the
+   * rectangle decides, by what is in it. Drag across counts and the block reads
+   * the `number` metrics; drag across statuses and the same block reads the
+   * `status` ones.
+   *
+   * A category takes a list, and the block prints every metric in it:
+   * `{ number: ['sum', 'mean', 'highest'] }` reads a run of counts three ways at
+   * once, in the order the cog's panel lists them rather than the order they are
+   * written here. A bare key is the shorthand for a list of one, so
+   * `{ number: 'mean' }` still means what it always did.
    *
    * Partial, and merged over the defaults (Sum, Success rate, Spring rate), so
    * a host that only cares about one category names only that one. Read once,
-   * like `rowsPerPage`: the toolbar's **Show** selector owns the record after
-   * that and reports every change through `onMetricsChange`.
+   * like `rowsPerPage`: the toolbar's metric cog owns the record after that and
+   * reports every change through `onMetricsChange`.
    *
    * A preference that names no metric is dropped and the default kept — the
    * rate keys are a template literal type, so `'rate:nonsense'` type-checks —
    * and so is a real metric filed under the wrong category, since
    * `{ status: 'mean' }` is not a question a rectangle of statuses can answer.
+   * A category left with nothing valid in it, `[]` included, keeps its default:
+   * there is no such thing as a kind of cell that reads as nothing.
    */
-  metrics?: Partial<MetricPrefs>
-  /** The whole record after a change, not just the preference that moved. */
+  metrics?: MetricPrefsSeed
+  /** The whole record after a change, not just the category that moved. */
   onMetricsChange?: (prefs: MetricPrefs) => void
   zebraRows?: boolean
 
+  /**
+   * The language the chrome is in. Controlled when passed — the switch beside
+   * the title then only *reports* a press through `onLocaleChange`, and nothing
+   * moves until the host sends the next value back, exactly as `records` works.
+   * Omit it to let the component own the choice and seed it with
+   * `defaultLocale`.
+   *
+   * It never touches the records. A status is the string `'Success'` in every
+   * language and a date keeps the format it was stored in — what changes is how
+   * they read on screen. See `i18n.ts` for where that line is drawn.
+   */
+  locale?: Locale
+  /** The language to open in when uncontrolled. Defaults to English. */
+  defaultLocale?: Locale
+  /** Fired by the switch, with the language pressed. */
+  onLocaleChange?: (locale: Locale) => void
+  /** Hides the switch beside the title without taking the header away. */
+  showLanguageSwitch?: boolean
+
+  /**
+   * Defaults to the current language's own word for it — "Data table" in
+   * English, "Veri Tablosu" in Turkish — so a host that does not name the
+   * screen gets one that follows the switch. A host that *does* name it owns
+   * the string in every language, which is the right trade: nothing here can
+   * translate a title it has never seen.
+   */
   title?: string
   kicker?: string
   showHeader?: boolean
@@ -144,6 +180,13 @@ export const DEFAULT_COLUMNS: ColumnKey[] = [
   'address',
 ]
 
+/**
+ * The English labels, and the stable ones. This is what a host reads a column
+ * back as and what a `.csv` header falls back to; the words the table actually
+ * *renders* come from the language in force — `Strings.columns` in `i18n.ts`,
+ * which declares the same record type so a new column cannot be added here
+ * without every language naming it.
+ */
 export const COLUMN_LABELS: Record<ColumnKey, string> = {
   name: 'Name',
   date: 'Date',

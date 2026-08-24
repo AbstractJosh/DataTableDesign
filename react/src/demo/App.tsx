@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { DataTable } from '../lib/DataTable'
+import { createDemoRecords } from '../lib/demoData'
 import { usePrefersReducedMotion } from '../lib/useMotion'
 
 /* Local copies of the prop unions so the dev harness does not couple itself to
@@ -23,9 +24,26 @@ const DEFAULTS = {
    * demo has to opt back in or it shows nothing moving.
    */
   motion: 'always' as Motion,
+  /*
+   * A thousand, not the library's own seventeen. Two pages of eight tell you
+   * nothing about how this behaves at the size it will actually be used at, and
+   * several things only have a shape at all past that point: 125 pages is what
+   * the windowed pager exists for, a whole-column selection is a thousand cells
+   * rather than eight, and the search runs over every one of them per keystroke.
+   * The first seventeen records are the same hand-checked ones either way — see
+   * `createDemoRecords`.
+   */
+  recordCount: 1000,
 }
 
 export default function App() {
+  const [recordCount, setRecordCount] = useState(DEFAULTS.recordCount)
+  /* Rebuilt only when the count changes. The table takes this as
+     `defaultRecords` and owns its copy from then on, so a new array here is a
+     full reset of the screen — which is what changing the count means, and
+     nothing else should trigger it. */
+  const records = useMemo(() => createDemoRecords(recordCount), [recordCount])
+
   const [accentColor, setAccentColor] = useState(DEFAULTS.accentColor)
   const [density, setDensity] = useState<Density>(DEFAULTS.density)
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULTS.rowsPerPage)
@@ -36,6 +54,7 @@ export default function App() {
   const silent = motion === 'never' || (motion === 'auto' && osReducesMotion)
 
   const reset = () => {
+    setRecordCount(DEFAULTS.recordCount)
     setAccentColor(DEFAULTS.accentColor)
     setDensity(DEFAULTS.density)
     setZebraRows(DEFAULTS.zebraRows)
@@ -58,6 +77,21 @@ export default function App() {
             onChange={(e) => setAccentColor(e.target.value)}
           />
           <code>{accentColor}</code>
+        </label>
+
+        {/* The count is a remount, not a prop change: `defaultRecords` is read
+            once, so the table has to be keyed on it to pick up a new list. */}
+        <label className="demo-controls__field">
+          records
+          <select
+            value={recordCount}
+            onChange={(e) => setRecordCount(Number(e.target.value))}
+          >
+            <option value={17}>17 (the library default)</option>
+            <option value={100}>100</option>
+            <option value={1000}>1000</option>
+            <option value={5000}>5000</option>
+          </select>
         </label>
 
         <label className="demo-controls__field">
@@ -120,6 +154,8 @@ export default function App() {
       </div>
 
       <DataTable
+        key={recordCount}
+        defaultRecords={records}
         accentColor={accentColor}
         density={density}
         rowsPerPage={DEFAULTS.rowsPerPage}
