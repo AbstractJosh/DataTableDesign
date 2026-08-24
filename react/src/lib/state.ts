@@ -9,9 +9,10 @@ import { ENUM_OPTIONS, newCondition, type FilterCondition, type FilterOp } from 
 import {
   metricCategory,
   normaliseMetricPrefs,
-  setMetricPref,
+  toggleMetricPref,
   type MetricKey,
   type MetricPrefs,
+  type MetricPrefsSeed,
 } from './metrics'
 import {
   DEFAULT_COLUMNS,
@@ -40,10 +41,10 @@ export interface TableState {
   /** Owned here, not by the prop: the toolbar's slider changes it. */
   rowsPerPage: number
   /**
-   * PORT ADDITION: what each *kind* of cell content should read as — one
-   * preference per category, not one metric for the whole table. Which of them
-   * the flow block uses is decided by the rectangle, not by this record: the
-   * cells are read, their category worked out, and that category's preference
+   * PORT ADDITION: what each *kind* of cell content should read as — a set of
+   * preferences per category, not one metric for the whole table. Which set the
+   * flow block uses is decided by the rectangle, not by this record: the cells
+   * are read, their category worked out, and every metric that category holds
    * is what answers. See metrics.ts.
    *
    * Owned here for the same reason `rowsPerPage` is — the prop seeds it and the
@@ -88,7 +89,7 @@ export const DEFAULT_ROWS_PER_PAGE = 8
 export function initialState(
   cols: ColumnKey[] = DEFAULT_COLUMNS,
   rowsPerPage: number = DEFAULT_ROWS_PER_PAGE,
-  metrics?: Partial<MetricPrefs> | null,
+  metrics?: MetricPrefsSeed | null,
 ): TableState {
   return {
     cols: cols.slice(),
@@ -130,10 +131,11 @@ export type TableAction =
   | { type: 'setPage'; page: number }
   | { type: 'setRowsPerPage'; rows: number }
   /**
-   * The toolbar's metric cog: one category's preference. Which category is
-   * not on the action, because the key already names it — see the case.
+   * The toolbar's metric cog: one metric switched on or off. Which category it
+   * belongs to is not on the action, because the key already names it — see the
+   * case.
    */
-  | { type: 'setMetric'; metric: MetricKey }
+  | { type: 'toggleMetric'; metric: MetricKey }
   /** Silently follow a shrinking result set; not a navigation. */
   | { type: 'clampPage'; page: number }
   | { type: 'toggleSort'; key: ColumnKey }
@@ -230,11 +232,11 @@ const KEEPS_RANGE: ReadonlySet<TableAction['type']> = new Set<TableAction['type'
   'collapse',
   'endEnter',
   'endCollapse',
-  // Load-bearing. The flow block reports on the rectangle, so setting the
-  // preference it reads under cannot be what takes the rectangle away — the
+  // Load-bearing. The flow block reports on the rectangle, so changing the
+  // preferences it reads under cannot be what takes the rectangle away — the
   // block would vanish on the press that asked it to change, and the selector
-  // stays open precisely so a second category can be set after the first.
-  'setMetric',
+  // stays open precisely so a second metric can be switched on after the first.
+  'toggleMetric',
 ])
 
 /**
@@ -264,9 +266,9 @@ const KEEPS_WHOLE_COLUMN: ReadonlySet<TableAction['type']> = new Set<TableAction
   'endEnter',
   'endCollapse',
   // Load-bearing for the same reason it is in KEEPS_RANGE: the flow block is
-  // reporting on this column, so setting the preference it reads under cannot
+  // reporting on this column, so changing the preferences it reads under cannot
   // be what takes the column away.
-  'setMetric',
+  'toggleMetric',
 ])
 
 /** Drop the per-row modes and cancel any animation still in flight. */
@@ -414,7 +416,7 @@ function apply(state: TableState, action: TableAction): TableState {
       }
     }
 
-    case 'setMetric': {
+    case 'toggleMetric': {
       // The action carries a metric and no category, because a metric names its
       // own: `'mean'` is the number category's, `rate:status:Success` is
       // Status's. `metricCategory` is that derivation written down, and it is
@@ -423,8 +425,10 @@ function apply(state: TableState, action: TableAction): TableState {
       const category = metricCategory(action.metric)
       if (!category) return state
       // No `cleared`: this one deliberately keeps the range (see KEEPS_RANGE),
-      // and there is nothing else about it a row's mode depends on.
-      const metrics = setMetricPref(state.metrics, action.metric)
+      // and there is nothing else about it a row's mode depends on. The toggle
+      // also hands back the same record when it refuses to empty a category,
+      // which is the other press this identity check absorbs.
+      const metrics = toggleMetricPref(state.metrics, action.metric)
       return metrics === state.metrics ? state : { ...state, metrics }
     }
 

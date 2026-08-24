@@ -29,6 +29,18 @@ const rowNames = () =>
 const byTitle = (title: string, root: ParentNode = document) =>
   root.querySelector(`[title="${title}"]`) as HTMLElement
 
+/**
+ * A numbered pager button, by the page it goes to.
+ *
+ * Not `{ name: '3' }` any more: the strip shows a window of five now, and a
+ * bare digit in a window says nothing about how much is either side of it, so
+ * the buttons carry "Page 3 of 125". The count is left off the pattern here —
+ * a test that changes the page size should not also have to restate how many
+ * pages that leaves.
+ */
+const pageBtn = (page: number) =>
+  screen.getByRole('button', { name: new RegExp(`^Page ${page} of `) })
+
 /* ---- aiming a drag ------------------------------------------------ *
  * A reorder is committed on the drop, and which slot it lands in comes from a
  * midpoint test against the cell under the pointer. jsdom supplies neither
@@ -215,10 +227,10 @@ describe('search and filter', () => {
 
   it('resets to page 1 when the query changes', async () => {
     const { user } = setup()
-    await user.click(screen.getByRole('button', { name: '3' }))
-    expect(screen.getByRole('button', { name: '3' })).toHaveAttribute('aria-current', 'page')
+    await user.click(pageBtn(3))
+    expect(pageBtn(3)).toHaveAttribute('aria-current', 'page')
     await user.type(screen.getByLabelText('Search records'), 'a')
-    expect(screen.getByRole('button', { name: '1' })).toHaveAttribute('aria-current', 'page')
+    expect(pageBtn(1)).toHaveAttribute('aria-current', 'page')
   })
 
   it('filters by status and combines with the query', async () => {
@@ -487,16 +499,16 @@ describe('filter dock', () => {
 
   it('a filter change resets to page 1; adding an inert chip does not', async () => {
     const { user } = setup({ rowsPerPage: 4 })
-    await user.click(screen.getByRole('button', { name: '4' }))
+    await user.click(pageBtn(4))
 
     await addFilter(user, 'Status')
     // nothing about the result set has changed yet, so the page the user was
     // reading is still the page they wanted
-    expect(screen.getByRole('button', { name: '4' })).toHaveAttribute('aria-current', 'page')
+    expect(pageBtn(4)).toHaveAttribute('aria-current', 'page')
 
     await tick(user, 'Status', 'Success')
     // 8 matches over 2 pages, so a bare clamp would have settled on page 2
-    expect(screen.getByRole('button', { name: '1' })).toHaveAttribute('aria-current', 'page')
+    expect(pageBtn(1)).toHaveAttribute('aria-current', 'page')
   })
 
   it('a filter change backs out of a pending delete, an armed row and a cell range', async () => {
@@ -637,7 +649,7 @@ describe('selection', () => {
     expect(stat('Selected')).toBe('8')
     // the accent border of `.dt-on` would disappear into the accent header bar
     expect(box).not.toHaveClass('dt-on')
-    await user.click(screen.getByRole('button', { name: '2' }))
+    await user.click(pageBtn(2))
     expect(
       screen.getByRole('button', { name: 'Select all rows on this page' }),
     ).toHaveAttribute('aria-pressed', 'false')
@@ -647,8 +659,8 @@ describe('selection', () => {
   it('keeps the selection across paging and filtering', async () => {
     const { user } = setup()
     await user.click(screen.getByRole('button', { name: 'Select Tunc Yanik' }))
-    await user.click(screen.getByRole('button', { name: '2' }))
-    await user.click(screen.getByRole('button', { name: '1' }))
+    await user.click(pageBtn(2))
+    await user.click(pageBtn(1))
     expect(screen.getByRole('button', { name: 'Select Tunc Yanik' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -708,8 +720,8 @@ describe('selection', () => {
  * keyboard contract is exercised there — same component, same keys, and the
  * dock's own lists are held to it too.
  *
- * The toolbar's metric cog is deliberately NOT this component — it holds
- * one value per kind of cell content rather than one value — but it answers the
+ * The toolbar's metric cog is deliberately NOT this component — it holds a set
+ * of values per kind of cell content rather than one value — but it answers the
  * same keys, and the "flow block" describe holds it to them.
  */
 describe('operator menu', () => {
@@ -814,17 +826,17 @@ describe('rows per page', () => {
     fireEvent.change(rowsInput(), { target: { value: '4' } })
     expect(rowNames()).toHaveLength(4)
     expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 1–4 of 17 entries')
-    expect(screen.getAllByRole('button', { name: /^[0-9]+$/ })).toHaveLength(5)
+    expect(screen.getAllByRole('button', { name: /^Page \d+ of 5$/ })).toHaveLength(5)
   })
 
   it('keeps the record at the top of the page in view', async () => {
     const { user } = setup()
-    await user.click(screen.getByRole('button', { name: '2' }))
+    await user.click(pageBtn(2))
     const first = rowNames()[0]
 
     fireEvent.change(rowsInput(), { target: { value: '4' } })
     expect(rowNames()[0]).toBe(first)
-    expect(screen.getByRole('button', { name: '3' })).toHaveAttribute('aria-current', 'page')
+    expect(pageBtn(3)).toHaveAttribute('aria-current', 'page')
   })
 
   it('takes the prop as its opening value and reports every change', () => {
@@ -863,17 +875,148 @@ describe('rows per page', () => {
 describe('pagination', () => {
   it('clamps Prev and Next', async () => {
     const { user } = setup()
-    expect(screen.getByRole('button', { name: '‹ Prev' })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: 'Next ›' }))
-    await user.click(screen.getByRole('button', { name: 'Next ›' }))
-    expect(screen.getByRole('button', { name: 'Next ›' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Previous page' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
+    expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled()
     expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 17–17 of 17 entries')
   })
 
-  it('renders one numbered button per page', () => {
+  it('renders one numbered button per page while they all fit', () => {
     setup()
-    expect(screen.getByRole('button', { name: '3' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '4' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Page 3 of 3' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Page 4 / })).not.toBeInTheDocument()
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * PORT ADDITION: the windowed pager
+ *
+ * The prototype prints one button per page, which the 1000-record set turns
+ * into 125 of them. What replaces it is a sliding window of five plus the four
+ * jumps, and the tests below are about the window's *edges* — the middle case
+ * is the easy one and the ends are where a centring rule goes wrong.
+ * ------------------------------------------------------------------ */
+
+/** The numbered buttons on screen, left to right, as the digits they print. */
+const pageNums = () =>
+  Array.from(document.querySelectorAll('.dt-pager-num')).map((el) => el.textContent)
+
+const jump = (name: string) => screen.getByRole('button', { name })
+
+describe('the page window', () => {
+  /* 1000 records at 8 a page is 125 pages. Built once per test through `setup`,
+     which is slower than the 17-record default but it is the only size at which
+     the window has anything to do. */
+  const big = (props: Partial<React.ComponentProps<typeof DataTable>> = {}) =>
+    setup({ defaultRecords: createDemoRecords(1000), ...props })
+
+  it('shows five numbers, not one hundred and twenty-five', () => {
+    big()
+    expect(pageNums()).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('stops at the start rather than centring off the end of the strip', async () => {
+    const { user } = big()
+    // There is no page 0 to pad with, so the window cannot centre on page 1 —
+    // it stops, and the current page sits at the left edge.
+    expect(pageNums()).toEqual(['1', '2', '3', '4', '5'])
+    await user.click(jump('Page 2 of 125'))
+    expect(pageNums()).toEqual(['1', '2', '3', '4', '5'])
+    await user.click(jump('Page 3 of 125'))
+    expect(pageNums()).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('slides one step at a time once it is clear of the start', async () => {
+    const { user } = big()
+    await user.click(jump('Page 4 of 125'))
+    // Centred now: two either side.
+    expect(pageNums()).toEqual(['2', '3', '4', '5', '6'])
+    await user.click(jump('Next page'))
+    expect(pageNums()).toEqual(['3', '4', '5', '6', '7'])
+    // The button just pressed is still on the strip, which is the whole reason
+    // the window slides instead of paging in fixed blocks of five.
+    expect(jump('Page 5 of 125')).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('stops at the end, with the last page at the right edge', async () => {
+    const { user } = big()
+    await user.click(jump('Last page'))
+    expect(pageNums()).toEqual(['121', '122', '123', '124', '125'])
+    expect(jump('Page 125 of 125')).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('marks exactly one page current', async () => {
+    const { user } = big()
+    await user.click(jump('Page 3 of 125'))
+    const current = document.querySelectorAll('.dt-pager-num[aria-current="page"]')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toHaveTextContent('3')
+    expect(current[0]).toHaveClass('dt-active')
+  })
+
+  it('never shows more numbers than there are pages', () => {
+    // 17 records over 3 pages: the window is the whole strip, not five buttons
+    // with two of them pointing nowhere.
+    setup()
+    expect(pageNums()).toEqual(['1', '2', '3'])
+  })
+})
+
+describe('the four jumps', () => {
+  const big = () => setup({ defaultRecords: createDemoRecords(1000) })
+
+  it('goes to the first and last page in one press', async () => {
+    const { user } = big()
+    await user.click(jump('Last page'))
+    expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 993–1000 of 1000 entries')
+
+    await user.click(jump('First page'))
+    expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 1–8 of 1000 entries')
+  })
+
+  it('steps one page with the single arrows', async () => {
+    const { user } = big()
+    await user.click(jump('Next page'))
+    expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 9–16 of 1000 entries')
+    await user.click(jump('Previous page'))
+    expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 1–8 of 1000 entries')
+  })
+
+  it('deadens both ends together', async () => {
+    const { user } = big()
+    // Nothing before page 1.
+    expect(jump('First page')).toBeDisabled()
+    expect(jump('Previous page')).toBeDisabled()
+    expect(jump('Next page')).toBeEnabled()
+    expect(jump('Last page')).toBeEnabled()
+
+    await user.click(jump('Last page'))
+    expect(jump('Next page')).toBeDisabled()
+    expect(jump('Last page')).toBeDisabled()
+    expect(jump('First page')).toBeEnabled()
+    expect(jump('Previous page')).toBeEnabled()
+  })
+
+  it('keeps its shape when a filter collapses the table to one page', async () => {
+    const { user } = big()
+    await user.click(jump('Last page'))
+
+    // A search that leaves one page has to clamp the current page with it, or
+    // the pager points at a page the table no longer has.
+    await user.type(screen.getByLabelText('Search records'), 'Tunc')
+    expect(pageNums()).toEqual(['1'])
+    expect(jump('First page')).toBeDisabled()
+    expect(jump('Last page')).toBeDisabled()
+  })
+
+  it('names itself as a landmark and carries the glyphs as decoration', () => {
+    big()
+    const nav = screen.getByRole('navigation', { name: 'Pagination' })
+    // The « ‹ › » are aria-hidden: the accessible name is on the button, so a
+    // screen reader says "Last page", not "right-pointing double angle".
+    expect(within(nav).getByRole('button', { name: 'Last page' })).toHaveTextContent('»')
+    expect(nav.querySelectorAll('[aria-hidden="true"]')).toHaveLength(4)
   })
 })
 
@@ -919,9 +1062,9 @@ describe('expand and collapse', () => {
   it('keeps expansion across paging', async () => {
     const { user } = setup()
     await user.click(screen.getAllByRole('button', { name: 'Toggle details' })[0])
-    await user.click(screen.getByRole('button', { name: '2' }))
+    await user.click(pageBtn(2))
     expect(screen.queryByText('Record ID')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '1' }))
+    await user.click(pageBtn(1))
     expect(screen.getByText('Record ID')).toBeInTheDocument()
   })
 
@@ -1778,7 +1921,7 @@ describe('cell range', () => {
     expect(ranged()).toHaveLength(0)
 
     sweep(cell(0, 0), cell(1, 1))
-    await user.click(screen.getByRole('button', { name: '2' }))
+    await user.click(pageBtn(2))
     expect(ranged()).toHaveLength(0)
 
     sweep(cell(0, 0), cell(1, 1))
@@ -1944,12 +2087,12 @@ describe('whole column', () => {
     const { user } = setup()
     await tripleClick(user, 'solvedCases')
 
-    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
     expect(ranged()).toHaveLength(8)
     expect(head('solvedCases')).toHaveClass('dt-col-picked')
 
     // the last page holds one record, and the column is still taken on it
-    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
     expect(ranged()).toHaveLength(1)
   })
 
@@ -1961,12 +2104,12 @@ describe('whole column', () => {
     expect(cell(0, CASES)).toHaveClass('dt-range-t')
     expect(cell(7, CASES)).not.toHaveClass('dt-range-b')
 
-    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
     expect(cell(0, CASES)).not.toHaveClass('dt-range-t')
     expect(cell(7, CASES)).not.toHaveClass('dt-range-b')
 
     // the last page is where it really stops
-    await user.click(screen.getByRole('button', { name: 'Next ›' }))
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
     expect(cell(0, CASES)).toHaveClass('dt-range-b')
     // the sides are closed on every page — it is one column wide throughout
     expect(cell(0, CASES)).toHaveClass('dt-range-l', 'dt-range-r')
@@ -2581,13 +2724,18 @@ describe('sum readout', () => {
  * PORT ADDITION: the same block, asked something other than "what do these add
  * up to".
  *
- * The toolbar's metric cog does not pick the metric. It holds one
- * preference per *kind* of cell content — numbers, Status values, Favourite
- * season values — and the rectangle decides which of them answers: sweep a
- * column of counts and the number preference reads them, sweep a column of
- * statuses and the status preference does, with nothing set in between. A
- * rectangle can no longer be the wrong kind for the metric on show, which is
- * the dead end this shape of the control removes.
+ * The toolbar's metric cog does not pick the metric. It holds a *set* of
+ * preferences per *kind* of cell content — numbers, Status values, Favourite
+ * season values — and the rectangle decides which set answers: sweep a column
+ * of counts and the number metrics read them, sweep a column of statuses and
+ * the status ones do, with nothing set in between. A rectangle can no longer be
+ * the wrong kind for the metric on show, which is the dead end this shape of the
+ * control removes.
+ *
+ * A set can hold as many metrics as the reader wants on screen, and the block
+ * prints one reading per metric — so a run of counts can read Sum, Mean and
+ * Highest at once. The one thing the panel refuses is emptying a set: the last
+ * ticked option of a kind is `aria-disabled` and its press does nothing.
  *
  * The arithmetic is unit-tested in metrics.test.ts and is not re-derived here.
  * What these cover is the wiring: which preference a rectangle puts in force,
@@ -2604,10 +2752,18 @@ describe('flow block', () => {
   const text = (el: Element) => (el.textContent || '').trim()
 
   const panel = () => document.querySelector('.dt-sum')
+  /** One reading — a tag, a figure, and a rate's count — per metric on show. */
+  const items = () => Array.from(panel()?.querySelectorAll('.dt-sum-item') || [])
   const tag = () => panel()?.querySelector('.dt-sum-tag')?.textContent
   const shown = () => panel()?.querySelector('.dt-sum-value')?.textContent
   /** The muted "(5 of 8)". Only rates have one. */
   const note = () => panel()?.querySelector('.dt-sum-note')?.textContent
+  /** Every reading in the strip, tag and figure, left to right. */
+  const readings = () =>
+    items().map((item) => [
+      item.querySelector('.dt-sum-tag')?.textContent,
+      item.querySelector('.dt-sum-value')?.textContent,
+    ])
 
   /** The three columns these read: Status, Solved cases, Favourite season. */
   const STATUS = 2
@@ -2623,11 +2779,12 @@ describe('flow block', () => {
   /** The selector, by its accessible name — "Showing <the metric in force>". */
   const showButton = () => screen.getByRole('button', { name: /^Showing/ })
   /**
-   * The metric the selector says is in force. Read off the accessible name and
-   * not the button's words, because a cog has none (DEV-18): the reading is the
-   * flow block's to print, and the button carries it for a screen reader and in
-   * its tooltip. `shown()` above is the block's own answer — the number — and
-   * these two are the two halves the pair is there to keep in step.
+   * The metrics the selector says are in force, as it words them. Read off the
+   * accessible name and not the button's words, because a cog has none
+   * (DEV-18): the reading is the flow block's to print, and the button carries
+   * it for a screen reader and in its tooltip. `shown()` above is the block's
+   * own answer — the number — and these two are the two halves the pair is
+   * there to keep in step.
    */
   const showing = () =>
     /^Showing (.+?)\./.exec(showButton().getAttribute('aria-label') || '')?.[1]
@@ -2650,22 +2807,53 @@ describe('flow block', () => {
   const showingCategories = () =>
     Array.from(pop()?.querySelectorAll('[aria-expanded="true"]') || []).map(catName)
 
+  /** One option row of the cog's panel, by its words. */
+  const option = (name: string) => screen.getByRole('option', { name })
+
   /**
-   * Set one category's preference, the way a user does: open the panel, open
-   * the kind, pick the metric. Picking deliberately leaves both open so a
-   * second kind can be set in the same visit, so this opens only what is shut —
-   * and expanding a second kind collapses the first, which is why the radio is
-   * looked for after the category is opened rather than before.
+   * Get to one metric: open the panel, open the kind that holds it. Picking
+   * deliberately leaves both open so a second metric can be set in the same
+   * visit, so this opens only what is shut — and expanding a second kind
+   * collapses the first, which is why the option is looked for after the
+   * category is opened rather than before.
    */
-  const pick = async (user: User, metric: string) => {
+  const reveal = async (user: User, metric: string) => {
     if (!pop()) await user.click(showButton())
-    if (!screen.queryByRole('radio', { name: metric })) {
+    if (!screen.queryByRole('option', { name: metric })) {
       for (const name of ['Numbers', 'Status', 'Favourite season']) {
         await user.click(category(name))
-        if (screen.queryByRole('radio', { name: metric })) break
+        if (screen.queryByRole('option', { name: metric })) break
       }
     }
-    await user.click(screen.getByRole('radio', { name: metric }))
+  }
+
+  /** Tick or untick one metric — the press itself, exactly as a user makes it. */
+  const pick = async (user: User, metric: string) => {
+    await reveal(user, metric)
+    await user.click(option(metric))
+  }
+
+  /**
+   * Leave a kind reading exactly one metric: tick the one asked for if it is
+   * not already on, then untick every other one in its section.
+   *
+   * Almost every test below is about *what a figure reads*, and says so most
+   * plainly with one figure on screen. A bare `pick` cannot say it any more —
+   * the options are a multi-select, so ticking Mean leaves Sum ticked beside it
+   * and the block reading two things. This is the two or three presses that
+   * would take, written once.
+   */
+  const only = async (user: User, metric: string) => {
+    await reveal(user, metric)
+    if (option(metric).getAttribute('aria-selected') !== 'true') {
+      await user.click(option(metric))
+    }
+    const others = Array.from(
+      option(metric).closest('ul')?.querySelectorAll('[aria-selected="true"]') || [],
+    )
+      .map((el) => (el.textContent || '').trim())
+      .filter((name) => name !== metric)
+    for (const name of others) await user.click(option(name))
   }
 
   /** The demo set with the case counts replaced, for the awkward values. */
@@ -2686,28 +2874,118 @@ describe('flow block', () => {
     expect(panel()!.querySelector('.dt-sum-note')).toBeNull()
   })
 
-  it('reads the same rectangle again when the number preference moves', async () => {
+  /**
+   * The strip scrolls rather than the block growing. Six metrics at once come to
+   * more than the toolbar has to give, and the block used to answer that by
+   * getting wider until the page itself scrolled.
+   *
+   * jsdom lays nothing out — every width it reports is 0 — so the measure is fed
+   * the numbers a browser would have given it. What that leaves genuinely under
+   * test is the part that is ours: what the component does with an overflowing
+   * strip, not whether a browser can overflow one.
+   */
+  describe('the strip when it will not fit', () => {
+    const strip = () => panel()?.querySelector('.dt-sum-strip') as HTMLElement
+
+    const measured = (el: HTMLElement, scrollWidth: number, clientWidth: number, at = 0) => {
+      for (const [name, value] of [
+        ['scrollWidth', scrollWidth],
+        ['clientWidth', clientWidth],
+        ['scrollLeft', at],
+      ] as const) {
+        Object.defineProperty(el, name, { value, configurable: true, writable: true })
+      }
+    }
+
+    it('is hidden and holds no tab stop while the whole strip is on screen', () => {
+      setup()
+      sweep(cell(0, CASES), cell(2, CASES))
+
+      // Exactly the tree it has always had: the figures are the live region's
+      // to say, and nothing here is reachable or worth reaching.
+      expect(panel()).toHaveAttribute('aria-hidden', 'true')
+      expect(panel()).not.toHaveAttribute('data-dt-flow-more')
+      expect(strip()).not.toHaveAttribute('tabindex')
+    })
+
+    it('takes a name and a tab stop once there is an edge to reach', () => {
+      setup()
+      sweep(cell(0, CASES), cell(2, CASES))
+
+      measured(strip(), 600, 200)
+      fireEvent(window, new Event('resize'))
+
+      // A hidden element must never hold a tab stop, so the slab comes back
+      // into the tree to carry one…
+      expect(panel()).not.toHaveAttribute('aria-hidden')
+      expect(strip()).toHaveAttribute('tabindex', '0')
+      expect(strip()).toHaveAccessibleName(
+        'What the selection reads as — scroll for the rest',
+      )
+      // …and the readings stay out of it regardless. The name is what the tab
+      // stop is for; the figures are still spoken by the live region.
+      expect(strip().querySelector('.dt-sum-line')).toHaveAttribute('aria-hidden', 'true')
+      expect(strip()).toHaveTextContent('177')
+    })
+
+    it('says which edge the rest of it is behind', () => {
+      setup()
+      sweep(cell(0, CASES), cell(2, CASES))
+
+      measured(strip(), 600, 200)
+      fireEvent(window, new Event('resize'))
+      expect(panel()).toHaveAttribute('data-dt-flow-more', 'end')
+
+      measured(strip(), 600, 200, 200)
+      fireEvent.scroll(strip())
+      expect(panel()).toHaveAttribute('data-dt-flow-more', 'both')
+
+      measured(strip(), 600, 200, 400)
+      fireEvent.scroll(strip())
+      expect(panel()).toHaveAttribute('data-dt-flow-more', 'start')
+
+      // Back to fitting — the tab stop goes with the edge that justified it.
+      measured(strip(), 200, 200, 0)
+      fireEvent(window, new Event('resize'))
+      expect(panel()).not.toHaveAttribute('data-dt-flow-more')
+      expect(strip()).not.toHaveAttribute('tabindex')
+      expect(panel()).toHaveAttribute('aria-hidden', 'true')
+    })
+
+    it('measures with a pixel of slack, so a strip that fits exactly is not an edge', () => {
+      setup()
+      sweep(cell(0, CASES), cell(2, CASES))
+
+      // Sub-pixel layout reports 599.6 as 600 against a 600 client width.
+      measured(strip(), 600.6, 600)
+      fireEvent(window, new Event('resize'))
+
+      expect(panel()).not.toHaveAttribute('data-dt-flow-more')
+    })
+  })
+
+  it('reads the same rectangle again when the number preferences move', async () => {
     const { user } = setup()
     sweep(cell(0, CASES), cell(2, CASES)) // 128, 42, 7
 
-    await pick(user, 'Product')
+    await only(user, 'Product')
     expect(tag()).toBe('PRODUCT')
     expect(shown()).toMatch(/^37.632$/) // grouped in the reader's locale
 
-    await pick(user, 'Mean')
+    await only(user, 'Mean')
     expect(tag()).toBe('MEAN')
     expect(shown()).toBe('59')
 
-    await pick(user, 'Median')
+    await only(user, 'Median')
     expect(shown()).toBe('42')
 
-    await pick(user, 'Highest')
+    await only(user, 'Highest')
     expect(shown()).toBe('128')
 
-    await pick(user, 'Lowest')
+    await only(user, 'Lowest')
     expect(shown()).toBe('7')
 
-    await pick(user, 'Sum')
+    await only(user, 'Sum')
     expect(shown()).toBe('177')
   })
 
@@ -2716,7 +2994,7 @@ describe('flow block', () => {
     sweep(cell(0, CASES), cell(1, CASES))
     expect(shown()).toBe('3') // the total of two integers is an integer
 
-    await pick(user, 'Mean')
+    await only(user, 'Mean')
     expect(shown()).toMatch(/^1[.,]5$/) // their mean is not
   })
 
@@ -2724,7 +3002,7 @@ describe('flow block', () => {
     const { user } = setup({ records: withCases(['123456789', '987654321']) })
     sweep(cell(0, CASES), cell(1, CASES))
 
-    await pick(user, 'Product')
+    await only(user, 'Product')
     // Eighteen digits is a wall, not a readout — and past 2^53 the trailing
     // ones are the float's rather than the data's.
     expect(shown()).toMatch(/^1.219E17$/)
@@ -2732,7 +3010,7 @@ describe('flow block', () => {
 
   it('follows the selection from one kind of cell to the next, with nothing set in between', async () => {
     const { user } = setup()
-    await pick(user, 'Mean')
+    await only(user, 'Mean')
 
     sweep(cell(0, CASES), cell(2, CASES)) // 128, 42, 7
     expect(tag()).toBe('MEAN')
@@ -2759,10 +3037,10 @@ describe('flow block', () => {
 
   it('keeps a preference per enum column, not one for enums', async () => {
     const { user } = setup()
-    await pick(user, 'Failed rate')
+    await only(user, 'Failed rate')
     // the same visit sets the second kind: a pick commits without closing
     expect(pop()).not.toBeNull()
-    await pick(user, 'Summer rate')
+    await only(user, 'Summer rate')
 
     sweep(cell(0, STATUS), cell(3, STATUS)) // Success, Success, In progress, Failed
     expect(tag()).toBe('FAILED RATE')
@@ -2772,12 +3050,144 @@ describe('flow block', () => {
     sweep(cell(0, SEASON), cell(3, SEASON)) // Summer, Spring, Summer, Autumn
     expect(tag()).toBe('SUMMER RATE')
     expect(shown()).toMatch(/^50\s?%$/)
-    expect(note()).toBe('(2 of 4)')
+    // no count beside it: a season's share is a categorisation rather than a
+    // figure the table is read for, and four of them on at once would each drag
+    // a parenthetical along the strip
+    expect(panel()!.querySelector('.dt-sum-note')).toBeNull()
 
     // "Success rate" would be meaningless over a rectangle of seasons, which is
     // why each enum column carries its own pick instead of sharing one
     sweep(cell(0, STATUS), cell(3, STATUS))
     expect(tag()).toBe('FAILED RATE')
+  })
+
+  it("prints a reading per metric the kind is set to, in the panel's order", async () => {
+    const { user } = setup()
+    sweep(cell(0, CASES), cell(2, CASES)) // 128, 42, 7
+    expect(readings()).toEqual([['SUM', '177']])
+
+    // switched on *beside* Sum rather than in place of it: the options are a
+    // multi-select, which is the whole of what a set per kind buys
+    await pick(user, 'Highest')
+    expect(readings()).toEqual([
+      ['SUM', '177'],
+      ['HIGHEST', '128'],
+    ])
+
+    // and Mean lands between them, because the strip follows the panel's order
+    // and not the order they were asked for — the block must not re-order
+    // itself under the reader as they set preferences
+    await pick(user, 'Mean')
+    expect(readings()).toEqual([
+      ['SUM', '177'],
+      ['MEAN', '59'],
+      ['HIGHEST', '128'],
+    ])
+
+    // the cog names all three, in the same order, for the pointer and the
+    // screen reader that cannot see the strip
+    expect(showing()).toBe('Sum, Mean, Highest')
+    expect(showButton()).toHaveAttribute('title', 'Showing Sum, Mean, Highest')
+  })
+
+  it('takes one back off, and will not take the last one', async () => {
+    const onMetricsChange = vi.fn()
+    const { user } = setup({ onMetricsChange })
+    sweep(cell(0, CASES), cell(2, CASES))
+
+    await pick(user, 'Mean')
+    await pick(user, 'Sum')
+    expect(readings()).toEqual([['MEAN', '59']])
+    expect(onMetricsChange).toHaveBeenCalledTimes(2)
+
+    // Mean is holding the kind up now, so it is marked and its press does
+    // nothing: a kind that read as nothing would look exactly like a rectangle
+    // that is not one kind of thing, and the block already means that by
+    // staying away
+    expect(option('Mean')).toHaveAttribute('aria-disabled', 'true')
+    expect(option('Mean')).toHaveAttribute('aria-selected', 'true')
+    await user.click(option('Mean'))
+    expect(readings()).toEqual([['MEAN', '59']])
+    expect(onMetricsChange).toHaveBeenCalledTimes(2)
+
+    // and it is only ever the last one that is held
+    await pick(user, 'Sum')
+    expect(option('Mean')).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('reads one column of statuses as every rate Status is set to', async () => {
+    const { user } = setup()
+    await pick(user, 'Failed rate') // beside the Success rate already on
+    sweep(cell(0, STATUS), cell(3, STATUS)) // Success, Success, In progress, Failed
+
+    expect(items().map((item) => item.querySelector('.dt-sum-tag')?.textContent)).toEqual([
+      'SUCCESS RATE',
+      'FAILED RATE',
+    ])
+    // each share with its own working beside it, and neither of them is the
+    // other's — the count is what the percentage was taken over
+    expect(items().map((item) => item.querySelector('.dt-sum-note')?.textContent)).toEqual([
+      '(2 of 4)',
+      '(1 of 4)',
+    ])
+  })
+
+  it('still only ever reads the kind in the rectangle, however much is set', async () => {
+    const { user } = setup()
+    await pick(user, 'Mean')
+    await pick(user, 'Failed rate')
+
+    // three metrics on across two kinds, and a rectangle answers with its own
+    sweep(cell(0, CASES), cell(2, CASES))
+    expect(readings()).toEqual([
+      ['SUM', '177'],
+      ['MEAN', '59'],
+    ])
+
+    sweep(cell(0, STATUS), cell(3, STATUS))
+    expect(readings().map(([reading]) => reading)).toEqual([
+      'SUCCESS RATE',
+      'FAILED RATE',
+    ])
+  })
+
+  it('speaks every reading in the one sentence', async () => {
+    const { user } = setup()
+    await pick(user, 'Mean')
+
+    fireEvent.mouseDown(cell(0, CASES))
+    fireEvent.mouseUp(document)
+    fireEvent.keyDown(cell(0, CASES), { key: 'ArrowDown', shiftKey: true })
+
+    // the block is aria-hidden, so this is the whole of what a screen reader
+    // hears about it — comma-joined, in the sentence case the tags are not
+    expect(screen.getByRole('status')).toHaveTextContent('Sum 170, Mean 85.')
+  })
+
+  it('says "all pages" once for the block, not once per reading', async () => {
+    const { user } = setup() // 17 records over 3 pages
+    await pick(user, 'Mean')
+
+    fireEvent.keyDown(cell(0, CASES), { key: ' ', ctrlKey: true })
+    expect(readings()).toHaveLength(2)
+    // the scope qualifies the rectangle, which is the one thing every reading
+    // in the strip has in common
+    expect(panel()!.querySelectorAll('.dt-sum-scope')).toHaveLength(1)
+  })
+
+  it('seeds a whole list from the metrics prop', async () => {
+    const onMetricsChange = vi.fn()
+    setup({ metrics: { number: ['highest', 'mean'] }, onMetricsChange })
+    sweep(cell(0, CASES), cell(2, CASES))
+
+    // in the panel's order, not the order the host wrote them
+    expect(readings()).toEqual([
+      ['MEAN', '59'],
+      ['HIGHEST', '128'],
+    ])
+    expect(showing()).toBe('Mean, Highest')
+    // seeded, not driven: the host hears nothing until something is pressed
+    expect(onMetricsChange).not.toHaveBeenCalled()
   })
 
   it('has nothing to say about text, dates, or a rectangle of two minds', () => {
@@ -2828,22 +3238,23 @@ describe('flow block', () => {
     expect(ranged().map(text)).toEqual(['128', '42', '7'])
     expect(shown()).toBe('177')
 
-    await pick(user, 'Mean')
+    await only(user, 'Mean')
 
     /*
-     * Load-bearing, and the reason `setMetric` is in KEEPS_RANGE (state.ts):
+     * Load-bearing, and the reason `toggleMetric` is in KEEPS_RANGE (state.ts):
      * every action outside that set nulls `state.range`, so without it the
      * press that asked the block a different question would take away the very
      * rectangle it was asking about, and the block would vanish mid-answer.
-     * The panel is still open at this point, which is the other half of it —
-     * the next pick has to have something to report on too.
+     * `only` is two presses here — Mean on, Sum off — so the rectangle has to
+     * survive both. The panel is still open at this point, which is the other
+     * half of it: the next pick has to have something to report on too.
      */
     expect(ranged().map(text)).toEqual(['128', '42', '7'])
     expect(cell(2, CASES)).toHaveClass('dt-range-active')
     expect(shown()).toBe('59')
   })
 
-  it('names the metric in force, and falls back to the numbers one with nothing selected', async () => {
+  it('names the metrics in force, and falls back to the numbers ones with nothing selected', async () => {
     const { user } = setup()
     expect(showing()).toBe('Sum')
     // a cog, so the name is the whole of what it says: what is in force, and
@@ -2865,13 +3276,13 @@ describe('flow block', () => {
     expect(panel()).toBeNull()
     expect(showing()).toBe('Sum')
 
-    await pick(user, 'Median')
+    await only(user, 'Median')
     expect(showing()).toBe('Median')
   })
 
-  it('speaks the metric in force, not the word Sum', async () => {
+  it('speaks the metrics in force, not the word Sum', async () => {
     const { user } = setup()
-    await pick(user, 'Mean')
+    await only(user, 'Mean')
 
     fireEvent.mouseDown(cell(0, CASES))
     fireEvent.mouseUp(document)
@@ -2902,14 +3313,16 @@ describe('flow block', () => {
     expect(tag()).toBe('FAILED RATE')
 
     await pick(user, 'Autumn rate')
-    // the whole record, not the one preference that moved: a host storing this
+    // the whole record, not the one category that moved: a host storing this
     // between visits gets back something it can hand straight to the prop, and
-    // the two categories it did not name are in it at their defaults
+    // the two categories it did not name are in it at their defaults. Autumn
+    // joins the Spring rate that was one of them rather than replacing it —
+    // every list, because a bare key is the shorthand for a list of one.
     expect(onMetricsChange).toHaveBeenCalledTimes(1)
     expect(onMetricsChange).toHaveBeenCalledWith({
-      number: 'median',
-      status: 'rate:status:Failed',
-      favouriteSeason: 'rate:favouriteSeason:Autumn',
+      number: ['median'],
+      status: ['rate:status:Failed'],
+      favouriteSeason: ['rate:favouriteSeason:Spring', 'rate:favouriteSeason:Autumn'],
     })
 
     // and the prop does not own it after that first read — the selector does
@@ -2968,38 +3381,43 @@ describe('flow block', () => {
     const heads = Array.from(document.querySelectorAll('.dt-metric-head'))
     expect(heads.map(catName)).toEqual(['Numbers', 'Status', 'Favourite season'])
     heads.forEach((head) => expect(head).toHaveAttribute('aria-expanded', 'false'))
-    expect(screen.queryAllByRole('radiogroup')).toHaveLength(0)
-    expect(screen.queryAllByRole('radio')).toHaveLength(0)
+    expect(screen.queryAllByRole('listbox')).toHaveLength(0)
+    expect(screen.queryAllByRole('option')).toHaveLength(0)
 
     // opening one shows its metrics, and only its own — "Success rate" is not
-    // an alternative to "Sum", it is the answer to a different question
+    // an alternative to "Sum", it is the answer to a different question. Tick
+    // as many as you like, which is the dock's enum values and this port's one
+    // shape for that.
     await user.click(category('Numbers'))
     expect(showingCategories()).toEqual(['Numbers'])
-    const numbers = screen.getByRole('radiogroup', { name: 'Numbers' })
-    expect(within(numbers).getAllByRole('radio')).toHaveLength(6)
-    expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual(['Sum'])
+    const numbers = screen.getByRole('listbox', { name: 'Numbers' })
+    expect(numbers).toHaveAttribute('aria-multiselectable', 'true')
+    expect(within(numbers).getAllByRole('option')).toHaveLength(6)
+    expect(screen.getAllByRole('option', { selected: true }).map(text)).toEqual(['Sum'])
 
     // and a second kind takes the first one's place rather than joining it
     await user.click(category('Status'))
     expect(showingCategories()).toEqual(['Status'])
-    expect(within(screen.getByRole('radiogroup', { name: 'Status' })).getAllByRole('radio'))
+    expect(within(screen.getByRole('listbox', { name: 'Status' })).getAllByRole('option'))
       .toHaveLength(3)
-    expect(screen.queryByRole('radio', { name: 'Sum' })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'Sum' })).toBeNull()
 
-    // one current pick per kind, not one across the panel — each section says
+    // its own ticks per kind, not one set across the panel — each section says
     // so when it is the one showing
-    expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual([
+    expect(screen.getAllByRole('option', { selected: true }).map(text)).toEqual([
       'Success rate',
     ])
     await user.click(category('Favourite season'))
-    expect(within(screen.getByRole('radiogroup', { name: 'Favourite season' })).getAllByRole('radio'))
+    expect(within(screen.getByRole('listbox', { name: 'Favourite season' })).getAllByRole('option'))
       .toHaveLength(4)
-    expect(screen.getAllByRole('radio', { checked: true }).map(text)).toEqual(['Spring rate'])
+    expect(screen.getAllByRole('option', { selected: true }).map(text)).toEqual([
+      'Spring rate',
+    ])
 
     // pressing the open one shuts it, back to the three kinds
     await user.click(category('Favourite season'))
     expect(showingCategories()).toEqual([])
-    expect(screen.queryAllByRole('radio')).toHaveLength(0)
+    expect(screen.queryAllByRole('option')).toHaveLength(0)
 
     // one tab stop inside the open section, not one per option
     await user.click(category('Numbers'))
@@ -3021,9 +3439,9 @@ describe('flow block', () => {
     // the accent edge is not the only way to know which one it is
     expect(category('Status')).toHaveAccessibleName('Status — in use for this selection')
     await user.click(category('Status'))
-    expect(within(marked[0] as HTMLElement).getByRole('radio', { name: 'Success rate' }))
+    expect(within(marked[0] as HTMLElement).getByRole('option', { name: 'Success rate' }))
       .toBeInTheDocument()
-    expect(screen.getByRole('radiogroup', { name: /^Status/ })).toHaveAccessibleName(
+    expect(screen.getByRole('listbox', { name: /^Status/ })).toHaveAccessibleName(
       'Status — in use for this selection',
     )
 
@@ -3036,65 +3454,70 @@ describe('flow block', () => {
 
   it('goes in and out of a section with the arrows, and across them with Tab', async () => {
     const { user } = setup()
-    const radio = (name: string) => screen.getByRole('radio', { name })
     showButton().focus()
 
     // the cog's own Down opens the panel on the kind in force — Numbers, with
     // nothing selected — and stops there: the metrics are a level in
     await user.keyboard('{ArrowDown}')
     expect(category('Numbers')).toHaveFocus()
-    expect(screen.queryAllByRole('radio')).toHaveLength(0)
+    expect(screen.queryAllByRole('option')).toHaveLength(0)
 
-    // one more Down is "go in", onto the section's own pick
+    // one more Down is "go in", onto the section's first tick
     await user.keyboard('{ArrowDown}')
     expect(showingCategories()).toEqual(['Numbers'])
-    expect(radio('Sum')).toHaveFocus()
+    expect(option('Sum')).toHaveFocus()
 
     await user.keyboard('{ArrowUp}')
-    expect(radio('Sum')).toHaveFocus() // and stops at the top of the section
+    expect(option('Sum')).toHaveFocus() // and stops at the top of the section
 
     await user.keyboard('{End}')
-    expect(radio('Lowest')).toHaveFocus()
+    expect(option('Lowest')).toHaveFocus()
 
-    // the arrows stay inside the section — each is its own radio group, so
-    // "Success rate" is not the option after "Lowest"
+    // the arrows stay inside the section — each is its own list, so "Success
+    // rate" is not the option after "Lowest"
     await user.keyboard('{ArrowDown}')
-    expect(radio('Lowest')).toHaveFocus()
+    expect(option('Lowest')).toHaveFocus()
 
     // Tab is what crosses, landing on the next kind rather than in it
     await user.tab()
     expect(category('Status')).toHaveFocus()
 
     await user.keyboard('{ArrowDown}')
-    expect(radio('Success rate')).toHaveFocus()
+    expect(option('Success rate')).toHaveFocus()
     // opening Status put Numbers away: one section at a time
     expect(showingCategories()).toEqual(['Status'])
-    expect(screen.queryByRole('radio', { name: 'Sum' })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'Sum' })).toBeNull()
 
-    // and moving does not commit: the pick is still where it was
-    expect(radio('Success rate')).toHaveAttribute('aria-checked', 'true')
+    // and moving does not commit: the ticks are still where they were
+    expect(option('Success rate')).toHaveAttribute('aria-selected', 'true')
 
     await user.keyboard('{ArrowDown}{Enter}')
-    expect(radio('In progress rate')).toHaveAttribute('aria-checked', 'true')
-    expect(radio('Success rate')).toHaveAttribute('aria-checked', 'false')
-    // committing closes neither the panel nor the section, so the pick just
+    // ticked *as well as*, not instead of — this is a multi-select, and Status
+    // now reads two ways
+    expect(option('In progress rate')).toHaveAttribute('aria-selected', 'true')
+    expect(option('Success rate')).toHaveAttribute('aria-selected', 'true')
+    // committing closes neither the panel nor the section, so the tick just
     // made is still on screen and the same visit can set another kind
     expect(pop()).not.toBeNull()
     expect(showingCategories()).toEqual(['Status'])
-    expect(radio('In progress rate')).toHaveFocus()
+    expect(option('In progress rate')).toHaveFocus()
+
+    // and the same key on the same option takes it back off
+    await user.keyboard('{Enter}')
+    expect(option('In progress rate')).toHaveAttribute('aria-selected', 'false')
 
     // Up from the top of a section is "back out": onto its category row, which
     // shuts it
-    await user.keyboard('{ArrowUp}{ArrowUp}')
-    expect(radio('Success rate')).toHaveFocus()
+    await user.keyboard('{ArrowUp}')
+    expect(option('Success rate')).toHaveFocus()
     await user.tab({ shift: true })
     expect(category('Status')).toHaveFocus()
     await user.keyboard('{ArrowUp}')
     expect(showingCategories()).toEqual([])
     expect(category('Status')).toHaveFocus()
 
-    // the button still reads Sum: it names the metric in force, and with
-    // nothing selected that is the numbers preference, not the pick just made
+    // the button still reads Sum: it names the metrics in force, and with
+    // nothing selected those are the numbers preferences, not the tick just made
     expect(showing()).toBe('Sum')
   })
 
@@ -3121,8 +3544,9 @@ describe('flow block', () => {
    * anywhere inside the control. Both keys the control answers have to answer
    * from there too, and the Escape is the one that matters — unhandled, it
    * reaches the table root's own Escape chain, which would clear the rectangle
-   * the block is reading. That is the selection `setMetric` sits in KEEPS_RANGE
-   * to protect, thrown away by a press that was meant to shut a menu.
+   * the block is reading. That is the selection `toggleMetric` sits in
+   * KEEPS_RANGE to protect, thrown away by a press that was meant to shut a
+   * menu.
    */
   it('answers Escape from the button, and leaves the selection where it was', async () => {
     const { user } = setup()
@@ -3144,12 +3568,11 @@ describe('flow block', () => {
 
   it('steps back into the panel from the button, where the sections were left', async () => {
     const { user } = setup()
-    const radio = (name: string) => screen.getByRole('radio', { name })
     await user.click(showButton())
 
     await user.tab() // onto Status
-    await user.keyboard('{ArrowDown}{ArrowDown}') // in, then below its pick
-    expect(radio('In progress rate')).toHaveFocus()
+    await user.keyboard('{ArrowDown}{ArrowDown}') // in, then below its tick
+    expect(option('In progress rate')).toHaveFocus()
 
     await user.tab({ shift: true }) // back onto Status
     await user.tab({ shift: true }) // onto Numbers
@@ -3163,9 +3586,10 @@ describe('flow block', () => {
     // collapsing back to the three kinds
     await user.keyboard('{ArrowDown}')
     expect(showingCategories()).toEqual(['Status'])
-    expect(radio('In progress rate')).toHaveFocus()
+    expect(option('In progress rate')).toHaveFocus()
     // and none of that committed anything
-    expect(radio('Success rate')).toHaveAttribute('aria-checked', 'true')
+    expect(option('Success rate')).toHaveAttribute('aria-selected', 'true')
+    expect(option('In progress rate')).toHaveAttribute('aria-selected', 'false')
   })
 })
 
@@ -3193,11 +3617,11 @@ describe('controlled records', () => {
 describe('page clamping', () => {
   it('falls back to the last page when a delete empties the current one', async () => {
     const { user } = setup({ rowsPerPage: 8 })
-    await user.click(screen.getByRole('button', { name: '3' }))
+    await user.click(pageBtn(3))
     expect(rowNames()).toHaveLength(1)
     await user.click(screen.getAllByRole('button', { name: 'Delete record' })[0])
     await user.click(screen.getByRole('button', { name: 'Confirm delete' }))
-    expect(screen.getByRole('button', { name: '2' })).toHaveAttribute('aria-current', 'page')
+    expect(pageBtn(2)).toHaveAttribute('aria-current', 'page')
     expect(rowNames()).toHaveLength(8)
   })
 })

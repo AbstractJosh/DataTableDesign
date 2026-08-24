@@ -5,7 +5,7 @@
  * DataTable.test.tsx; this file pins the arithmetic, the detection and the
  * preference rules, which are far easier to state as a column of strings than
  * to drag a rectangle over — and which are where the feature is actually
- * decided: what a rectangle turns out to be, which preference that puts in
+ * decided: what a rectangle turns out to be, which preferences that puts in
  * force, what rules a rectangle out entirely, and how many decimals reach the
  * screen.
  *
@@ -23,16 +23,18 @@ import {
   METRIC_LIST,
   isMetricKey,
   metricCategory,
-  metricFor,
-  metricInForce,
   metricLabel,
+  metricNames,
+  metricsFor,
+  metricsInForce,
   normaliseMetricPrefs,
   rangeCategory,
-  rangeMetric,
+  rangeMetrics,
   rateMetricKey,
-  setMetricPref,
+  toggleMetricPref,
   type MetricKey,
   type MetricPrefs,
+  type MetricPrefsSeed,
 } from './metrics'
 import type { ColumnKey, DataTableRecord } from './types'
 
@@ -86,13 +88,36 @@ const grid = (cols: ColumnKey[], cells: string[][]): Grid => ({
   rect: { top: 0, left: 0, bottom: cells.length - 1, right: cols.length - 1 },
 })
 
-/** The defaults with a preference or two moved — what a user leaves behind. */
-const prefsWith = (...metrics: string[]): MetricPrefs =>
-  metrics.reduce(setMetricPref, DEFAULT_METRIC_PREFS)
+/**
+ * The defaults with a category or two replaced — what a user leaves behind.
+ *
+ * Replaced rather than toggled on top of: naming `'mean'` here means "a
+ * rectangle of numbers reads Mean", which is what almost every test below wants
+ * to say, where toggling it on would leave Sum switched on beside it and every
+ * one of them reading two figures. Naming two metrics of one category is how
+ * the multi-metric tests ask for both.
+ */
+const prefsWith = (...metrics: string[]): MetricPrefs => {
+  const seed: Record<string, string[]> = {}
+  for (const metric of metrics) {
+    // A key that names no category is filed under itself, so it is dropped by
+    // the same rule that drops a metric on the wrong shelf.
+    const category = metricCategory(metric) ?? metric
+    ;(seed[category] ||= []).push(metric)
+  }
+  return normaliseMetricPrefs(seed as MetricPrefsSeed)
+}
 
 const categoryOf = (g: Grid) => rangeCategory(g.rows, g.cols, g.rect)
-const read = (g: Grid, ...metrics: string[]) =>
-  rangeMetric(g.rows, g.cols, g.rect, prefsWith(...metrics))
+/** Everything the rectangle came to, under those preferences. */
+const readAll = (g: Grid, ...metrics: string[]) =>
+  rangeMetrics(g.rows, g.cols, g.rect, prefsWith(...metrics))
+/**
+ * The one figure a one-metric category produces — what most of this file is
+ * about, and what the readout was for the whole of its life before a category
+ * could hold two.
+ */
+const read = (g: Grid, ...metrics: string[]) => readAll(g, ...metrics)?.results[0] ?? null
 
 const ask = (key: ColumnKey, values: string[], ...metrics: string[]) =>
   read(column(key, values), ...metrics)
@@ -117,8 +142,8 @@ describe('the metric list', () => {
     expect(METRIC_GROUPS[0].options.map((o) => o.label)).toEqual([
       'Sum', 'Product', 'Mean', 'Median', 'Highest', 'Lowest',
     ])
-    expect(METRIC_GROUPS[0].options[0].key).toBe(DEFAULT_METRIC_PREFS.number)
-    expect(DEFAULT_METRIC_PREFS.number).toBe('sum')
+    expect(DEFAULT_METRIC_PREFS.number).toEqual([METRIC_GROUPS[0].options[0].key])
+    expect(DEFAULT_METRIC_PREFS.number).toEqual(['sum'])
   })
 
   it('turns every enum option into a rate, in the option order the dock uses', () => {
@@ -251,9 +276,11 @@ describe('numeric metrics', () => {
     const { rows, cols, rect } = column('solvedCases', ['1024', '2048', '7.5'])
     const old = rangeSum(rows, cols, rect)
     expect(old).not.toBeNull()
-    expect(rangeMetric(rows, cols, rect, prefsWith('sum'))?.value).toBe(formatSum(old!))
+    const only = (prefs?: MetricPrefs) =>
+      rangeMetrics(rows, cols, rect, prefs)?.results[0]?.value
+    expect(only(prefsWith('sum'))).toBe(formatSum(old!))
     // and the preferences argument is optional, defaulting to that same sum
-    expect(rangeMetric(rows, cols, rect)?.value).toBe(formatSum(old!))
+    expect(only()).toBe(formatSum(old!))
   })
 
   it('averages an even count off the two middle values', () => {
@@ -370,9 +397,20 @@ describe('rates', () => {
   })
 
   it('says 100% when every cell matches', () => {
-    const result = ask('favouriteSeason', ['Spring', 'Spring', 'Spring'])
+    const result = status(['Success', 'Success', 'Success'])
     expect(result?.value).toMatch(/^100\s?%$/)
     expect(result?.note).toBe('3 of 3')
+  })
+
+  it('leaves the count off a season, which is where it only costs width', () => {
+    // The working behind the percentage is worth the strip's width where the
+    // share is a figure the table is read for — Status — and not where it is a
+    // categorisation. The arithmetic is the same either way.
+    const result = ask('favouriteSeason', ['Spring', 'Spring', 'Summer', 'Autumn'])
+    expect(result?.value).toMatch(/^50\s?%$/)
+    expect(result?.note).toBeNull()
+    // and the speech is the value alone, as it is for every numeric metric
+    expect(result?.speech).toBe(`Spring rate ${result?.value}`)
   })
 
   it('skips blanks, which are not a failure to be that option', () => {
@@ -396,14 +434,16 @@ describe('rates', () => {
 describe('the preferences', () => {
   const EIGHT = ['Success', 'Success', 'Failed', 'Success', 'In progress', 'Success', 'Success', 'Failed']
 
-  it('opens on Sum, Success rate and Spring rate — the first of each group', () => {
+  it('opens on Sum, Success rate and Spring rate — the first of each group, one each', () => {
     expect(DEFAULT_METRIC_PREFS).toEqual({
-      number: 'sum',
-      status: 'rate:status:Success',
-      favouriteSeason: 'rate:favouriteSeason:Spring',
+      number: ['sum'],
+      status: ['rate:status:Success'],
+      favouriteSeason: ['rate:favouriteSeason:Spring'],
     })
     for (const group of METRIC_GROUPS) {
-      expect(metricFor(DEFAULT_METRIC_PREFS, group.category)).toBe(group.options[0].key)
+      expect(metricsFor(DEFAULT_METRIC_PREFS, group.category)).toEqual([
+        group.options[0].key,
+      ])
     }
   })
 
@@ -425,7 +465,7 @@ describe('the preferences', () => {
   it('never has to be matched to the selection by hand', () => {
     // One record of preferences, three rectangles: each reads its own.
     const prefs = normaliseMetricPrefs({ number: 'mean', status: 'rate:status:Failed' })
-    const answer = (g: Grid) => rangeMetric(g.rows, g.cols, g.rect, prefs)
+    const answer = (g: Grid) => rangeMetrics(g.rows, g.cols, g.rect, prefs)?.results[0]
 
     expect(answer(column('solvedCases', ['10', '20']))?.tag).toBe('MEAN')
     expect(answer(column('status', ['Success', 'Failed']))?.tag).toBe('FAILED RATE')
@@ -437,9 +477,9 @@ describe('the preferences', () => {
     // Setting a season rate does not change what a rectangle of statuses says…
     const seasoned = prefsWith('rate:favouriteSeason:Winter')
     const statuses = column('status', ['Success', 'Failed'])
-    expect(rangeMetric(statuses.rows, statuses.cols, statuses.rect, seasoned)?.tag).toBe(
-      'SUCCESS RATE',
-    )
+    expect(
+      rangeMetrics(statuses.rows, statuses.cols, statuses.rect, seasoned)?.results[0].tag,
+    ).toBe('SUCCESS RATE')
     // …and a rectangle of counts reads the number preference however the rate
     // preferences are set. Under the old single-metric selector this pairing
     // was the dead end that took the block away.
@@ -448,35 +488,87 @@ describe('the preferences', () => {
     expect(shown(['128', '42'], 'rate:favouriteSeason:Winter')).toBe('170')
   })
 
-  it('files a picked metric under its own category, and changes nothing else', () => {
-    const next = setMetricPref(DEFAULT_METRIC_PREFS, 'rate:favouriteSeason:Autumn')
+  it('switches a metric on under its own category, and changes nothing else', () => {
+    const next = toggleMetricPref(DEFAULT_METRIC_PREFS, 'rate:favouriteSeason:Autumn')
     expect(next).toEqual({
       ...DEFAULT_METRIC_PREFS,
-      favouriteSeason: 'rate:favouriteSeason:Autumn',
+      // added to Spring rather than replacing it: the panel is a multi-select
+      favouriteSeason: ['rate:favouriteSeason:Spring', 'rate:favouriteSeason:Autumn'],
     })
-    expect(setMetricPref(next, 'median').number).toBe('median')
+    expect(toggleMetricPref(next, 'median').number).toEqual(['sum', 'median'])
+  })
+
+  it('switches one back off, and never the last one of a category', () => {
+    const two = toggleMetricPref(DEFAULT_METRIC_PREFS, 'median')
+    expect(two.number).toEqual(['sum', 'median'])
+    expect(toggleMetricPref(two, 'sum').number).toEqual(['median'])
+
+    // and the press that would empty a category is refused, not obeyed: an
+    // empty category would put the block back to reading nothing over cells
+    // that plainly read as something
+    const one = toggleMetricPref(two, 'median')
+    expect(one.number).toEqual(['sum'])
+    expect(toggleMetricPref(one, 'sum')).toBe(one)
   })
 
   it('hands back the very same record when nothing moves', () => {
     // The reducer leans on this identity to skip a render.
-    expect(setMetricPref(DEFAULT_METRIC_PREFS, 'sum')).toBe(DEFAULT_METRIC_PREFS)
-    expect(setMetricPref(DEFAULT_METRIC_PREFS, 'rate:status:Success')).toBe(
+    expect(toggleMetricPref(DEFAULT_METRIC_PREFS, 'sum')).toBe(DEFAULT_METRIC_PREFS)
+    expect(toggleMetricPref(DEFAULT_METRIC_PREFS, 'rate:status:Success')).toBe(
       DEFAULT_METRIC_PREFS,
     )
     // and a key that names no metric changes no preference at all
-    expect(setMetricPref(DEFAULT_METRIC_PREFS, 'rate:status:Pending')).toBe(
+    expect(toggleMetricPref(DEFAULT_METRIC_PREFS, 'rate:status:Pending')).toBe(
       DEFAULT_METRIC_PREFS,
     )
-    expect(setMetricPref(DEFAULT_METRIC_PREFS, 'total')).toBe(DEFAULT_METRIC_PREFS)
+    expect(toggleMetricPref(DEFAULT_METRIC_PREFS, 'total')).toBe(DEFAULT_METRIC_PREFS)
+  })
+
+  it('keeps a category in the panel\'s order, not the order it was switched on', () => {
+    // Highest is last of the six and Product second, whichever way round they
+    // are pressed — the block must not re-order itself under the reader
+    const prefs = ['highest', 'product'].reduce(toggleMetricPref, DEFAULT_METRIC_PREFS)
+    expect(prefs.number).toEqual(['sum', 'product', 'highest'])
+    expect(normaliseMetricPrefs({ number: ['highest', 'product'] }).number).toEqual([
+      'product',
+      'highest',
+    ])
   })
 
   it('takes a partial record from the host over the defaults', () => {
     expect(normaliseMetricPrefs()).toEqual(DEFAULT_METRIC_PREFS)
     expect(normaliseMetricPrefs()).not.toBe(DEFAULT_METRIC_PREFS)
-    expect(normaliseMetricPrefs({ status: 'rate:status:Failed' })).toEqual({
+    expect(normaliseMetricPrefs({ status: ['rate:status:Failed'] })).toEqual({
       ...DEFAULT_METRIC_PREFS,
-      status: 'rate:status:Failed',
+      status: ['rate:status:Failed'],
     })
+  })
+
+  it('takes a bare key as the list of one it always was', () => {
+    // The shape the prop had before a category could hold two, and a host
+    // written against it still means exactly what it said.
+    expect(normaliseMetricPrefs({ number: 'median' })).toEqual({
+      ...DEFAULT_METRIC_PREFS,
+      number: ['median'],
+    })
+  })
+
+  it('de-duplicates a list and drops the junk inside one', () => {
+    expect(
+      normaliseMetricPrefs({
+        number: ['mean', 'mean', 'sum', 'nonsense', 'rate:status:Success'],
+      } as unknown as MetricPrefsSeed).number,
+    ).toEqual(['sum', 'mean'])
+  })
+
+  it('leaves a category on its default rather than empty it', () => {
+    // Nothing valid left under the heading — an empty list, or three typos — is
+    // the same case, and the same answer: there is no kind of cell that reads
+    // as nothing.
+    expect(normaliseMetricPrefs({ number: [] })).toEqual(DEFAULT_METRIC_PREFS)
+    expect(
+      normaliseMetricPrefs({ status: ['rate:status:Pending'] } as unknown as MetricPrefsSeed),
+    ).toEqual(DEFAULT_METRIC_PREFS)
   })
 
   it('drops what a host sends that is not a metric for the category it is under', () => {
@@ -494,22 +586,103 @@ describe('the preferences', () => {
   })
 
   it('answers for a category a host left out of its record', () => {
-    // Total by design: the selector still has to draw a current pick for every
-    // section it renders.
-    const sparse = { number: 'mean' } as MetricPrefs
-    expect(metricFor(sparse, 'status')).toBe('rate:status:Success')
-    expect(metricFor(sparse, 'number')).toBe('mean')
+    // Total by design: the selector still has to draw a current tick for every
+    // section it renders, and the block a figure for every kind it can detect.
+    const sparse = { number: ['mean'] } as MetricPrefs
+    expect(metricsFor(sparse, 'status')).toEqual(['rate:status:Success'])
+    expect(metricsFor(sparse, 'number')).toEqual(['mean'])
+    // an empty list is the same case as a missing one
+    expect(metricsFor({ number: [] } as MetricPrefs, 'number')).toEqual(['sum'])
   })
 
-  it('names the metric in force, and the number preference when there is none', () => {
-    const prefs = prefsWith('median', 'rate:status:Failed')
+  it('names the metrics in force, and the number ones when there are none', () => {
+    const prefs = prefsWith('median', 'rate:status:Failed', 'rate:status:Success')
     const statuses = column('status', ['Success', 'Failed'])
-    const answer = rangeMetric(statuses.rows, statuses.cols, statuses.rect, prefs)
+    const answer = rangeMetrics(statuses.rows, statuses.cols, statuses.rect, prefs)
 
-    expect(metricInForce(prefs, answer)).toBe('rate:status:Failed')
-    expect(metricLabel(metricInForce(prefs, answer))).toBe('Failed rate')
+    expect(metricsInForce(prefs, answer)).toEqual([
+      'rate:status:Success',
+      'rate:status:Failed',
+    ])
+    expect(metricNames(metricsInForce(prefs, answer))).toBe('Success rate, Failed rate')
     // nothing selected: the button falls back to what numbers would read as
-    expect(metricInForce(prefs, null)).toBe('median')
+    expect(metricsInForce(prefs, null)).toEqual(['median'])
+    expect(metricLabel('median')).toBe('Median')
+  })
+})
+
+describe('several metrics over one rectangle', () => {
+  const RUN = ['128', '42', '7']
+
+  it('reads the rectangle once per metric its kind is set to', () => {
+    const answer = readAll(column('solvedCases', RUN), 'sum', 'mean', 'highest')
+    expect(answer?.results.map((result) => result.tag)).toEqual(['SUM', 'MEAN', 'HIGHEST'])
+    expect(answer?.results.map((result) => result.value)).toEqual(['177', '59', '128'])
+    expect(answer?.category).toBe('number')
+  })
+
+  it("lays them out in the panel's order however they were asked for", () => {
+    // Lowest is the sixth option and Median the fourth, whichever order the
+    // preferences name them in
+    const answer = readAll(column('solvedCases', RUN), 'lowest', 'median')
+    expect(answer?.results.map((result) => result.metric)).toEqual(['median', 'lowest'])
+  })
+
+  it('reads a run of statuses as every rate that kind is set to', () => {
+    const answer = readAll(
+      column('status', ['Success', 'Success', 'Failed', 'In progress']),
+      'rate:status:Success',
+      'rate:status:Failed',
+    )
+    expect(answer?.results.map((result) => result.tag)).toEqual([
+      'SUCCESS RATE',
+      'FAILED RATE',
+    ])
+    expect(answer?.results.map((result) => result.note)).toEqual(['2 of 4', '1 of 4'])
+  })
+
+  it('only ever answers with the kind the cells are, however much else is set', () => {
+    // Six numeric metrics and every rate of both enum columns switched on at
+    // once: a rectangle of counts still reads as numbers and nothing else.
+    const answer = readAll(
+      column('solvedCases', RUN),
+      ...METRIC_LIST.map((option) => option.key),
+    )
+    expect(answer?.category).toBe('number')
+    expect(answer?.results).toHaveLength(6)
+    expect(answer?.results.every((result) => metricCategory(result.metric) === 'number'))
+      .toBe(true)
+  })
+
+  it('drops a metric that cannot answer and keeps the rest', () => {
+    // The product of three 1e300s overflows the double and has no readout at
+    // all; before the block could hold two figures that took the whole reading
+    // away, and now it takes only its own.
+    const huge = ['1e300', '1e300', '1e300']
+    expect(readAll(column('solvedCases', huge), 'product')).toBeNull()
+
+    const answer = readAll(column('solvedCases', huge), 'sum', 'product', 'highest')
+    expect(answer?.results.map((result) => result.metric)).toEqual(['sum', 'highest'])
+  })
+
+  it('speaks the lot as one sentence, in the order the block prints them', () => {
+    const answer = readAll(column('solvedCases', RUN), 'sum', 'mean')
+    // the caller adds the full stop, as it has always done
+    expect(answer?.speech).toBe('Sum 177, Mean 59')
+  })
+
+  it('still says nothing at all about a rectangle with no kind', () => {
+    // Every metric switched on changes none of the rules the sum had: names
+    // have no answer, and one figure short of two cells is not a statistic.
+    const all = METRIC_LIST.map((option) => option.key)
+    expect(readAll(column('name', ['Amelia Hart', 'Marcus Reed']), ...all)).toBeNull()
+    expect(readAll(column('solvedCases', ['128']), ...all)).toBeNull()
+    expect(
+      readAll(
+        grid(['status', 'solvedCases'], [['Success', '128'], ['Failed', '42']]),
+        ...all,
+      ),
+    ).toBeNull()
   })
 })
 

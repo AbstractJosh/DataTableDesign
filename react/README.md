@@ -73,11 +73,15 @@ own the list.
 | `density` | `'comfortable' \| 'compact'` | `comfortable` | 15px or 9px vertical cell padding. |
 | `rowsPerPage` | `number` | `8` | The page size the table **opens on**; the toolbar's slider owns it after that. |
 | `onRowsPerPageChange` | `(rows) => void` | — | Fired when that slider moves. |
-| `metrics` | `Partial<MetricPrefs>` | Sum, Success rate, Spring rate | What each **kind** of cell content reads as in the flow block. Merged over the defaults; read once, like `rowsPerPage`. See **The flow block**. |
-| `onMetricsChange` | `(prefs) => void` | — | Fired when the toolbar's metric-cog panel moves one of them. Carries the whole record, not the one that moved. |
+| `metrics` | `MetricPrefsSeed` | Sum, Success rate, Spring rate | What each **kind** of cell content reads as in the flow block — a list per kind (`{ number: ['sum', 'mean'] }`), or a bare key for a list of one. Merged over the defaults; read once, like `rowsPerPage`. See **The flow block**. |
+| `onMetricsChange` | `(prefs) => void` | — | Fired when the toolbar's metric-cog panel switches one on or off. Carries the whole record, not the kind that moved. |
 | `zebraRows` | `boolean` | `true` | Odd rows on `#f8f4f4`. |
-| `title` | `string` | `Data table` | |
-| `kicker` | `string` | `Records / Directory` | |
+| `locale` | `'en' \| 'tr'` | — | Controlled language. See **Language**. |
+| `defaultLocale` | `'en' \| 'tr'` | `en` | The language to open in when uncontrolled. |
+| `onLocaleChange` | `(locale) => void` | — | Fired by the switch beside the title. |
+| `showLanguageSwitch` | `boolean` | `true` | Hides the switch without taking the header away. |
+| `title` | `string` | the language's own | `Data table` / `Veri Tablosu`. Pass one and you own it in every language. |
+| `kicker` | `string` | the language's own | `Records / Directory` / `Kayıtlar / Dizin`. |
 | `showHeader` | `boolean` | `true` | Drop the title block and stats to embed the table in an existing page frame. |
 | `logoSrc` | `string \| null` | the ALP mark | The header's first cell. `null` leaves it empty. |
 | `motion` | `'auto' \| 'always' \| 'never'` | `auto` | See **Motion**. |
@@ -94,6 +98,72 @@ where `status` is `'Success' | 'In progress' | 'Failed'` and `favouriteSeason`
 is `'Spring' | 'Summer' | 'Autumn' | 'Winter'`. The first seven are the six
 columns plus the id; the last five fill the detail panes. `email` is one of
 them — it is not a column, but the search still reads it.
+
+## Language
+
+The table ships in **English and Turkish**, and the switch that changes it sits
+beside the title — two segments, the Union Flag and the Turkish flag, the one in
+force filled in the accent and the other drained to greyscale. It is a
+`radiogroup` with a roving tab stop: Tab reaches it once and the arrows move
+between the languages.
+
+The flags are drawn, not fetched: `flags.tsx` builds both from primitives in one
+60x40 viewBox, so the package still ships one `.js` and one `.css` and neither
+flag needs a bundler to know about an image. Know what the marks cost, though — a
+flag is a country and not a language, and a reader who does not recognise one has
+nothing left to read. They are `aria-hidden`, so the accessible names are
+untouched (`English` / `Switch to Türkçe`, and `title` on hover), and
+`LOCALE_SHORT` is still exported if you would rather print `EN` / `TR`.
+
+```tsx
+<DataTable defaultLocale="tr" />                        // opens in Turkish
+<DataTable locale={lang} onLocaleChange={setLang} />    // the host owns it
+<DataTable showLanguageSwitch={false} locale="tr" />    // no switch, Turkish
+```
+
+### What it changes, and what it must not
+
+The switch changes the **words**. It does not change the **data**.
+
+Every record value stays canonical English: a status is the string `'Success'`
+whatever the table reads it as, a season is `'Spring'`, and a date keeps the
+`19 August, 2026` format it was stored in. That is not an oversight — it is what
+lets everything else go on working:
+
+- the filter dock matches on `'Success'`, so a chip set in English still filters
+  a table switched to Turkish;
+- a metric key is `rate:status:Success` in both languages, so stored preferences
+  survive the switch;
+- `PILL_CLASS` paints off the canonical value, so the green pill stays green;
+- `onRecordsChange` hands a host the same bytes it was given;
+- a `.csv` cell is the record's own value, so a second system can read it back.
+
+What *is* translated is how those values read on screen. `readEnum` and
+`readCell` do that at the point of render, and `formatDate` swaps a month it
+recognises (`19 August, 2026` → `19 Ağustos, 2026`) and leaves every other date
+format exactly as it found it.
+
+Three things follow the language beyond the labels:
+
+- **Collation and case folding.** The sort runs `localeCompare` with the table's
+  tag and the search folds with `toLocaleLowerCase`. Turkish needs both:
+  `'İSTANBUL'.toLowerCase()` leaves a combining dot behind and stops matching a
+  typed `istanbul`.
+- **Number formatting.** The flow block's readouts group and point the way the
+  table's language does, not the way the host machine does.
+- **The export.** A `.csv` saved from a Turkish table is headed `Ad`, `Tarih`,
+  `Durum`, and the suggested file name folds the letters rather than dropping
+  them (`Çözülen vaka` → `cozulen-vaka`). The cells stay canonical.
+
+### Reading the strings yourself
+
+`STRINGS`, `EN` and `TR` are exported, so a host can label its own chrome to
+match: `STRINGS.tr.columns.status` is `'Durum'`. `Strings` is one type covering
+both dictionaries, so a string added to English fails to compile until Turkish
+names it.
+
+A third language is a new entry in `STRINGS` inside this package rather than a
+prop — the type is what makes a missing string an error instead of a blank.
 
 ## Filtering
 
@@ -243,28 +313,40 @@ answers is decided by what is *in* it, not by which columns it covers, so it
 keeps working when a host swaps the column set out.
 
 **What each kind reads as is a preference, not a mode.** The cog at the right of
-the toolbar holds one metric per kind of cell content — Sum, Product, Mean,
-Median, Highest or Lowest for numbers, and one rate per value for each enum
-column (Status, Favourite season) — and the *selection* decides which of them is
-in force. Set numbers to Mean once, and from then on dragging across counts
-reads a mean while dragging across statuses reads whatever the Status preference
-says, with nothing to change in between. The block itself names the metric it
-used, as its tag, so the cog says nothing back — it carries the reading in its
-accessible name and its tooltip, which track the selection the same way: counts
-read Sum, statuses read Success rate, and with nothing selected it falls back to
-the numbers preference.
+the toolbar holds a set of metrics per kind of cell content — any of Sum,
+Product, Mean, Median, Highest and Lowest for numbers, and any of the rates for
+each enum column's values (Status, Favourite season) — and the *selection*
+decides which set is in force. Set numbers to Mean once, and from then on
+dragging across counts reads a mean while dragging across statuses reads whatever
+Status is set to, with nothing to change in between. The block itself names each
+metric it used, as that reading's tag, so the cog says nothing back — it carries
+the reading in its accessible name and its tooltip, which track the selection the
+same way: counts read Sum, statuses read Success rate, and with nothing selected
+it falls back to the numbers set.
+
+**A kind can be asked for several things at once.** Tick Sum, Mean and Highest
+under **Numbers** and a run of counts prints all three, side by side in one
+block, each with its own tag and separated by a hairline — always in the panel's
+own order, never the order they were switched on, so the strip does not
+re-arrange itself under the reader. The same goes for the rates: Success rate and
+Failed rate together read one column of statuses two ways, each with its own
+`(2 of 4)` beside it. Only the kind in the rectangle is ever printed, however
+much else is switched on elsewhere, and the one thing the panel refuses is
+emptying a kind — the last ticked option of a section is `aria-disabled` and its
+press does nothing, because a kind that read as nothing would look exactly like a
+rectangle that is not one kind of thing.
 
 The panel opens on the kinds and nothing else — **Numbers**, **Status**,
 **Favourite season** — with the one the current selection is being read under
 marked in the accent. Press a kind and it expands in place into the metrics it
-can be read as, as its own radio group with its own current pick; a second kind
-takes the first one's place, so the panel is never longer than one list. The
-kinds are the heavier type of the two, the metrics under them lighter and
-indented, because the first question is which kind and the second is how to read
-it. A pick commits immediately and leaves both the panel and the section open, so
-one visit can set more than one kind. `metrics` seeds the record — partially,
-naming only the kinds you care about — and `onMetricsChange` reports the whole of
-it back.
+can be read as, as its own multi-select listbox; a second kind takes the first
+one's place, so the panel is never longer than one list. The kinds are the
+heavier type of the two, the metrics under them lighter and indented, because the
+first question is which kind and the second is how to read it. A press commits
+immediately and leaves both the panel and the section open, so one visit can
+switch on several metrics across several kinds. `metrics` seeds the record —
+partially, naming only the kinds you care about — and `onMetricsChange` reports
+the whole of it back.
 
 The rules are a spreadsheet's, and all of them predate the selector. Blank cells
 are skipped rather than counted as zero; a rectangle that is not all one kind
@@ -275,13 +357,20 @@ one cell" is not a rate. A total carries no more decimals than went into it, so
 `0.1 + 0.2` reads `0.3`; a mean or a median, being derived rather than one of the
 cells, is allowed two places past that; a product too big to read comes out in
 exponent form; and a rate is at most one decimal, with the count it was taken
-over beside it — `62.5% (5 of 8)`. Everything is formatted in the reader's
-locale.
+over beside it — `62.5% (5 of 8)`. **Favourite season** is the one exception: its
+rates print the percentage alone, because a season's share is a categorisation
+rather than a figure the table is read for, and four of them can be on at once,
+each dragging its own parenthetical along the strip. Everything is formatted in
+the reader's locale. One metric that cannot answer at all — a product that
+overflows a double — drops out of the strip and leaves the readings beside it
+standing; the block only goes away when nothing answers.
 
 A whole-column selection is read the same way, over every page rather than over
-the one on screen, and the panel says so: an **ALL PAGES** tag beside the value,
-which appears only when there is more than one page to cover. Without it a total
-four times the size of the column in front of you would read as a bug.
+the one on screen, and the panel says so: an **ALL PAGES** tag at the end of the
+block, which appears only when there is more than one page to cover. Without it a
+total four times the size of the column in front of you would read as a bug. It
+is drawn once however many readings are on show — it qualifies the rectangle,
+which is the one thing they all have in common.
 
 It sits after the toolbar's flex spacer, so it appears and disappears in the
 gap — the buttons beside it never move. It slides in from their side and fades
@@ -290,9 +379,9 @@ element cannot animate, and it is skipped entirely when motion is off. The
 selector beside it is a fixed width, so the toolbar does not shift when the
 reading changes what it is called.
 
-The block is `aria-hidden`, with the reading appended to the live region that
-announces the selection instead — in sentence case, and naming the metric
-actually in force: "Mean 42.5.", "Success rate 62.5%."
+The block is `aria-hidden`, with the readings appended to the live region that
+announces the selection instead — in sentence case, and naming the metrics
+actually in force: "Mean 42.5.", "Success rate 62.5%.", "Sum 177, Mean 59."
 
 Not supported: Ctrl+click for a second rectangle, more than one column at a
 time, pasting, clearing cells, and auto-scrolling the horizontal overflow while
@@ -307,8 +396,8 @@ same choice:
 
 ```ts
 import {
-  DEFAULT_METRIC_PREFS, METRIC_GROUPS, metricFor, metricLabel,
-  normaliseMetricPrefs, setMetricPref,
+  DEFAULT_METRIC_PREFS, METRIC_GROUPS, metricNames, metricsFor,
+  normaliseMetricPrefs, toggleMetricPref,
   type MetricKey, type MetricPrefs,
 } from '@alp/data-table'
 
@@ -317,8 +406,77 @@ const prefs = normaliseMetricPrefs(JSON.parse(localStorage.metrics ?? 'null'))
 
 `normaliseMetricPrefs` is the guard the component runs on the way in — it drops
 an unknown kind, a key that names no metric, and a real metric filed under the
-wrong kind — so storage that has gone stale reads as the defaults rather than as
-a blank block.
+wrong kind, de-duplicates what is left and puts it in the panel's order — so
+storage that has gone stale reads as the defaults rather than as a blank block. A
+kind left with nothing valid in it, `[]` included, keeps its default, which is
+the same rule `toggleMetricPref` enforces when it refuses to untick a kind's last
+metric.
+
+## Pagination
+
+The footer's pager is a **sliding window of five numbers** with four jumps
+around it:
+
+```
+[«] [‹]  3  4  5  6  7  [›] [»]
+ │   │                   │   └── last page
+ │   │                   └────── next page
+ │   └────────────────────────── previous page
+ └────────────────────────────── first page
+```
+
+The window centres on the current page and slides one step at a time, so the
+page you just pressed is still on the strip and the numbers either side of you
+are the ones you would reach for next. At the ends it stops rather than centring
+— there is no page 0 to pad with — so page 1 shows `1 2 3 4 5` with the current
+page at the left edge, and the last page shows the final five with it at the
+right. Fewer pages than the window means all of them, not five buttons with two
+pointing nowhere.
+
+Why a window at all: the prototype draws one button per page, which is fine for
+17 records over 3 pages and unusable at 1000 over 125 — the strip outgrows the
+footer, wraps over several lines and pushes Export off the row. The two outer
+jumps are the window's other half: once the strip stops showing every page,
+"go to the last one" stops being something you can point at.
+
+`pageWindow(page, pageCount, size?)` is exported if you are building your own
+pager over the same rule.
+
+The four jumps print `« ‹ › »` and carry their names on `aria-label` (the
+glyphs are `aria-hidden`), the numbered buttons are named `Page 3 of 125` rather
+than a bare digit, the current one is marked `aria-current="page"`, and the whole
+strip is a `<nav>` labelled *Pagination*. Both ends go **disabled together** —
+first and previous on page 1, next and last on the final page — rather than
+being removed, so the strip never changes width under the pointer.
+
+## Demo data, and larger sets
+
+`createDemoRecords(count?)` builds the placeholder list. It defaults to the
+prototype's **17**, and those first 17 are byte-identical whatever you ask for —
+they are hand-checked (the Success+Spring and In progress+Summer overlaps exist
+so two enum chips in the dock demonstrate an AND instead of emptying the table),
+and the behaviour tests are written against them. Records 18 and up are
+generated around that fixed head.
+
+```tsx
+import { createDemoRecords } from '@alp/data-table'
+
+<DataTable defaultRecords={createDemoRecords(1000)} />
+```
+
+It is **deterministic** — no `Math.random` — so the same call twice gives the
+same rows: a bug found at row 743 is still at row 743 after a reload, and a sort
+or a filter can be checked by eye against a set that does not move underneath
+it. The generated rows keep every guarantee the rest of the port leans on:
+unique ids continuing the `REC-4820 + 7i` series, unique emails, canonical
+`status` and `favouriteSeason` values, dates in the parseable `19 August, 2026`
+format, all twelve status×season pairs reachable, and case counts spread wide
+enough that a sum, a mean and a median over a run read differently.
+
+The dev harness (`npm run dev`) runs on **1000** and has a `records` control for
+17 / 100 / 1000 / 5000. Eight rows over two pages say nothing about how the
+pager, a whole-column selection or the search behave at the size this will
+actually be used at.
 
 ## Exporting
 
@@ -464,20 +622,21 @@ prototype could only do by drag:
 | `↓` / `Enter` / `Space` on **Add filter** | open the column list; arrows and `Home` / `End` move, `Enter` adds a chip, `Escape` closes |
 | inside a filter chip | the operator menu answers the same keys; the value list is multi-select, so `Enter` / `Space` ticks rather than commits; `Escape` closes the chip and goes back to its button |
 | `↓` / `Enter` / `Space` on the metric cog | open the preferences panel, on the kind in force |
-| on a kind | `Enter` / `Space` expands it, `↓` goes in to its current metric, `↑` shuts it again, `Tab` crosses to the next kind |
-| inside a kind | arrows and `Home` / `End` move, `Enter` / `Space` picks *without* closing the panel or the section, `Tab` leaves for the next kind, `Escape` closes the panel and goes back to the cog |
+| on a kind | `Enter` / `Space` expands it, `↓` goes in to its first ticked metric, `↑` shuts it again, `Tab` crosses to the next kind |
+| inside a kind | arrows and `Home` / `End` move without committing, `Enter` / `Space` ticks or unticks *without* closing the panel or the section, `Tab` leaves for the next kind, `Escape` closes the panel and goes back to the cog |
 | `←` / `→` on the rows-per-page slider | one row at a time (`Home` / `End` for the ends) |
 
 Moves are announced through a polite live region. Sorted columns carry
 `aria-sort`, the selection boxes `aria-pressed`, the dock's operator and value
 lists `aria-selected` (they are `role="listbox"` popups, not toggle buttons —
 the add-picker marks the columns already docked `aria-disabled` instead), the
-metric cog's kinds `aria-expanded` buttons over `role="radiogroup"` sections of
-`aria-checked` radios (one pick each, which is what makes them radios rather
-than a listbox; a shut section is unmounted, so it has no radio in the tree and
-no tab stop) under a button named "Showing <metric>. Set what each kind of cell
-selection reads as." — an icon-only control has to say both halves — the chip
-buttons
+metric cog's kinds `aria-expanded` buttons over `role="listbox"
+aria-multiselectable` sections of `aria-selected` options (the dock's own
+multi-select shape, since a kind holds as many metrics as the reader ticks; the
+last one on is `aria-disabled`, and a shut section is unmounted, so it has no
+option in the tree and no tab stop) under a button named "Showing <metrics>. Set
+what each kind of cell selection reads as." — an icon-only control has to say
+both halves — the chip buttons
 `aria-haspopup="dialog"` + `aria-expanded`, the row chevrons
 `aria-expanded`, and the current page `aria-current`. Focus rings are
 `:focus-visible` only, 2px in the accent.

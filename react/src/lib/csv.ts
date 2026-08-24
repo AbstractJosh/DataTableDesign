@@ -68,9 +68,19 @@ export function toCsv(rows: string[][]): string {
  * copies a rectangle bare (`rangeText`). A paste lands next to the columns it
  * came from and needs no labels; a file is opened days later by someone who was
  * not there, and two columns of bare numbers are worth nothing to them.
+ *
+ * Which is also the argument for `labels`: the component passes the language it
+ * is set to, so someone reading a Turkish table exports a file headed `Ad`,
+ * `Tarih`, `Durum` rather than one headed in a language they did not choose.
+ * The *cells* stay canonical either way — a status is the string `Success` in
+ * the file as it is on the record — so the export is still something a second
+ * system can read back. Omitting it keeps the English headers this always had.
  */
-export function planCsv(plan: ExportPlan): string {
-  const header = plan.columns.map((key) => COLUMN_LABELS[key])
+export function planCsv(
+  plan: ExportPlan,
+  labels: Record<ColumnKey, string> = COLUMN_LABELS,
+): string {
+  const header = plan.columns.map((key) => labels[key])
   const body = plan.records.map((record) =>
     plan.columns.map((key) => String(record[key] ?? '')),
   )
@@ -81,10 +91,25 @@ export function planCsv(plan: ExportPlan): string {
 
 const FALLBACK_NAME = 'export'
 
-/** Lower-case, non-alphanumerics folded to single hyphens, trimmed of them. */
+/**
+ * Lower-case, non-alphanumerics folded to single hyphens, trimmed of them.
+ *
+ * Accented letters are folded to their base rather than thrown away, or a
+ * Turkish column would name its file after the holes left behind: `Çözülen vaka`
+ * went to `z-len-vaka` when everything outside `a-z0-9` was simply a separator.
+ * NFD splits a letter from its marks and the marks are then dropped — which
+ * handles ç ğ ö ş ü, but not ı, whose dotlessness *is* the letter and so
+ * decomposes to nothing. The two i's are mapped by hand first, before the
+ * lower-casing that would otherwise turn İ into an i with a combining dot.
+ */
+const FOLD: Record<string, string> = { 'ı': 'i', 'İ': 'i', 'I': 'i' }
+
 export function slug(value: string): string {
   return value
+    .replace(/[ıİI]/g, (letter) => FOLD[letter])
     .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
 }
@@ -96,10 +121,14 @@ export function slug(value: string): string {
  * selection. A whole column names the column, since that is the only thing
  * distinguishing one column export from the next.
  */
-export function defaultExportName(plan: ExportPlan, title: string): string {
+export function defaultExportName(
+  plan: ExportPlan,
+  title: string,
+  labels: Record<ColumnKey, string> = COLUMN_LABELS,
+): string {
   const base = slug(title) || 'data-table'
   if (plan.source === 'column') {
-    return `${base}-${slug(COLUMN_LABELS[plan.columns[0]])}`
+    return `${base}-${slug(labels[plan.columns[0]])}`
   }
   if (plan.source === 'cells') return `${base}-cells`
   return `${base}-${plan.records.length}-record${plan.records.length === 1 ? '' : 's'}`

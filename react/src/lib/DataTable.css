@@ -111,10 +111,107 @@
   font-size: 11px; font-weight: 600; letter-spacing: .18em;
   text-transform: uppercase; color: var(--dt-n600); margin-bottom: 10px;
 }
-.dt-root .dt-page-head h1 {
+/* One block for the heading and its sizing ghosts, so the two cannot drift
+   apart — a ghost measuring in a different type than the title it stands in for
+   would reserve the wrong width. */
+.dt-root .dt-page-head h1,
+.dt-root .dt-title-ghost {
   margin: 0; font-size: 44px; font-weight: 800;
   letter-spacing: -.025em; line-height: .95;
 }
+/* PORT ADDITION: the title's width is what decides where the switch sits, and
+   the title is one of the words the switch changes — `Veri Tablosu` is about
+   45px wider than `Data table` at 44px, so pressing a flag slid the control out
+   from under the pointer that had just pressed it.
+
+   The fix is to stop measuring the live title. Every language's version is
+   stacked into this one grid area, all but the live one hidden, so the cell is
+   as wide as the widest and stays that width whatever is showing. The cost is
+   air: in English the switch sits where the Turkish title would have ended. That
+   is the trade — a constant gap reads as spacing, a control that jumps 45px when
+   you use it reads as a bug.
+
+   `height: 0` on the ghosts because the width is all that is wanted from them:
+   at a narrow viewport the longest title can wrap to a second line while the
+   live one still fits on the first, and without this the header would grow a
+   line for a title nobody can see. */
+.dt-root .dt-title-set { display: grid; }
+.dt-root .dt-title-set > * { grid-area: 1 / 1; }
+.dt-root .dt-title-ghost {
+  display: grid; height: 0; overflow: hidden;
+  visibility: hidden; pointer-events: none;
+}
+.dt-root .dt-title-ghost > * { grid-area: 1 / 1; }
+/* PORT ADDITION: the language switch, on the title's own line.
+
+   `align-items: baseline` stays for the row, but the switch opts out of it. It
+   used to be 11px text, and sharing a baseline with the 44px heading is what
+   made the two read as one line rather than as a control parked beside it. A
+   flag has no baseline: a button whose only child is a block-level `<svg>`
+   synthesises one from its bottom margin edge, which would drop the whole
+   switch about 12px below the letters. Centring is what replaces it, and at
+   this size it lands where the baseline used to — the heading's `line-height:
+   .95` makes its cap band ~5.5px to ~37px inside a 41.8px line box, and a 32px
+   switch centred on that box sits at ~4.9px to ~36.9px. Flush with the caps,
+   which is the alignment the baseline rule was buying in the first place. */
+.dt-root .dt-title-row {
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+}
+/* Two segments in one 2px frame, sharing a divider — the system's flat,
+   square, bordered idiom, the same one the rows pill and the filter chips use.
+   Not a border on each button, or the joint between them would be 4px. */
+.dt-root .dt-lang {
+  display: inline-flex; align-self: center;
+  border: 2px solid var(--dt-ink); background: var(--dt-n100);
+}
+/* `display: flex` so the flag centres in the segment without a line box under
+   it — the type rules that used to live here went with the `EN` / `TR` text.
+   Padding is 6px rather than 5px because the content grew from an 11px cap
+   height to a 16px flag, and 10px stays on the sides so the divider still has
+   the same air either side of it. */
+.dt-root .dt-lang-seg {
+  display: flex; align-items: center;
+  padding: 6px 10px; border: 0; background: transparent;
+  font: inherit; line-height: 1; cursor: pointer;
+  transition: background 140ms ease;
+}
+/* The divider belongs to the second segment, so the frame keeps its own edges
+   and adding a third language needs no change here. */
+.dt-root .dt-lang-seg + .dt-lang-seg { border-left: 2px solid var(--dt-ink); }
+/* Filled, not outlined: the chosen one is the accent slab the pager's current
+   page and the dock's open chip are, so "on" means the same thing everywhere on
+   the screen. */
+.dt-root .dt-lang-seg.dt-on {
+  background: var(--dt-accent); color: var(--dt-reversed);
+}
+/* Inset, because the segment sits flush inside the frame — a 2px offset ring
+   would be drawn over the border and read as a thicker box rather than as
+   focus. */
+.dt-root .dt-lang-seg:focus-visible { outline-offset: -2px; }
+.dt-root .dt-lang-seg.dt-on:focus-visible { outline-color: var(--dt-reversed); }
+/* The flag itself. Two things are going on:
+
+   The hairline is `outline` rather than `border` so it cannot touch the box the
+   `width`/`height` attributes set, and it is the same 1px `--dt-n300` the row
+   dividers use — the one hairline weight the system allows. It is not decoration:
+   the Union Flag's field is #012169 and the selected segment behind it is the
+   navy accent #1d2d46, and without a line between them the flag's edge
+   disappears into the slab.
+
+   The off segment used to be grey text that went to ink on hover. Full-colour
+   flags in both segments would throw that away — two loud marks, with only the
+   slab left to say which one is in force — so the same quieting is done in the
+   only terms a flag has: drained of colour and stepped back, full colour on
+   hover and when chosen. Colour is reinforcement here, never the signal; the
+   filled slab still carries the state on its own, greyscale and all. */
+.dt-root .dt-lang-flag {
+  display: block; outline: 1px solid var(--dt-n300);
+  filter: grayscale(1); opacity: .7;
+  transition: filter 140ms ease, opacity 140ms ease;
+}
+.dt-root .dt-lang-seg:hover .dt-lang-flag,
+.dt-root .dt-lang-seg.dt-on .dt-lang-flag { filter: none; opacity: 1; }
+
 .dt-root .dt-stats { display: flex; gap: 40px; padding-bottom: 4px; }
 .dt-root .dt-stat-label {
   font-size: 10px; font-weight: 600; letter-spacing: .16em;
@@ -1134,12 +1231,32 @@
 .dt-root .dt-export-save:focus-visible { outline-color: var(--dt-reversed); }
 
 .dt-root .dt-pager { display: flex; gap: 6px; align-items: center; }
+/* PORT: the two word buttons ("‹ Prev", "Next ›") are four glyph buttons now
+   — first, previous, next, last. Square rather than the old 12px-padded pill:
+   a `«` is one character, so the box is sized by the 34px grid the numbered
+   buttons already sit on instead of by its own text, and the four of them plus
+   five numbers read as one strip of equal cells. The words did not survive
+   translation into a fixed width anyway ("Sonraki" is half again as wide as
+   "Next"), which the glyphs sidestep entirely — the name is on `aria-label`. */
 .dt-root .dt-pager-nav {
-  height: 34px; padding: 0 12px; border: 2px solid var(--dt-n400);
+  width: 34px; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 2px solid var(--dt-n400);
   background: transparent; color: var(--dt-n700);
-  font-size: 11px; font-weight: 700; letter-spacing: .08em;
-  text-transform: uppercase; cursor: pointer;
+  /* Bumped from 11px: a guillemet is drawn small for its point size, and at 11
+     it read as a speck against the 12px digits beside it. */
+  font-size: 14px; font-weight: 700; line-height: 1; cursor: pointer;
 }
+/* Both ends go dead together — first and previous on page 1, next and last on
+   the final page. Greyed rather than removed: a strip that changed width at the
+   ends would move the numbers under the pointer on the last press before it. */
+.dt-root .dt-pager-nav:disabled {
+  color: var(--dt-n400); cursor: default;
+}
+/* The window, as its own box. It keeps the numbers on one 6px rhythm without
+   inheriting the gap the four jumps sit on, and it is the thing that stays put
+   when the window slides underneath it. */
+.dt-root .dt-pager-nums { display: flex; gap: 6px; }
 .dt-root .dt-pager-num {
   min-width: 34px; height: 34px; padding: 0 8px;
   border: 2px solid var(--dt-n400); background: transparent; color: var(--dt-ink);
@@ -1234,13 +1351,96 @@
    the metric cog existed. They are the same object and renaming them would
    buy nothing but a diff. */
 .dt-root .dt-sum {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 14px;
+  display: flex; align-items: center;
+  /* The sides moved to the strip inside, so a reading can run to the block's
+     own border instead of stopping 14px short of it. */
+  padding: 9px 0;
   border: 2px solid var(--dt-accent); background: var(--dt-accent);
   color: var(--dt-reversed);
+  /* The line the block sits on may squeeze it — without this the readings would
+     push the toolbar wider than the table instead. */
+  min-width: 0;
   animation: dt-sum-in 140ms ease;
 }
 .dt-root .dt-sum.dt-out { animation: dt-sum-out 160ms ease forwards; }
+/* PORT ADDITION: the strip scrolls; the block does not grow.
+
+   Six numeric metrics at once, or four rates and a scope, come to more than the
+   toolbar has to give at anything short of the full 1400px. The block used to
+   answer that by getting wider — wrapping the toolbar onto a second line and,
+   past that, running off the end of the table and taking the page's own
+   horizontal scrollbar with it. Now the readings scroll inside a block that
+   stays where it is put.
+
+   `flex: none` on the line and `nowrap` under it are what make that true. As
+   flex children of a container being squeezed, the readings would otherwise
+   compress and break their own words rather than let the strip overflow, and a
+   strip that never overflows never scrolls.
+
+   The native scrollbar is off, and that is not a preference. A classic bar —
+   Windows, Linux, any pointer that is not a trackpad — is laid out inside the
+   box, so the block would grow by ~11px the moment it overflowed and shrink
+   back when it did not: a toolbar whose rank changes with the width of a
+   figure. The mask below is the affordance instead, and it costs nothing
+   vertically. */
+.dt-root .dt-sum-strip {
+  display: flex; flex: 1 1 auto; min-width: 0;
+  padding: 0 14px;
+  overflow-x: auto; overflow-y: hidden;
+  /* the strip's end is the end — no handing the scroll on to the page */
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.dt-root .dt-sum-strip::-webkit-scrollbar { display: none; }
+/* Inset, for the same reason the language switch's is: the strip is flush
+   inside the slab, and an offset ring would be drawn over the 2px border and
+   read as a thicker box rather than as focus. Reversed, because it is drawn on
+   the accent. */
+.dt-root .dt-sum-strip:focus-visible {
+  outline: 2px solid var(--dt-reversed); outline-offset: -2px;
+}
+.dt-root .dt-sum-line {
+  display: flex; align-items: center; gap: 14px; flex: none;
+}
+/* Which edge has more behind it, faded rather than ruled: a hairline here would
+   be the third thing on the block drawn in `rgba(243, 242, 242, .45)`, and the
+   reader would have to work out which of them divides two readings and which
+   means the strip continues. A reading cut off mid-figure needs no such
+   working-out. 24px is about one figure's worth — enough to read as fading, not
+   so much that it eats the reading beside it. */
+.dt-root .dt-sum[data-dt-flow-more='end'] .dt-sum-strip {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+          mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+.dt-root .dt-sum[data-dt-flow-more='start'] .dt-sum-strip {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 24px), transparent);
+          mask-image: linear-gradient(to left, #000 calc(100% - 24px), transparent);
+}
+.dt-root .dt-sum[data-dt-flow-more='both'] .dt-sum-strip {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px,
+                                      #000 calc(100% - 24px), transparent);
+          mask-image: linear-gradient(to right, transparent, #000 24px,
+                                      #000 calc(100% - 24px), transparent);
+}
+/* One reading — a tag, a figure, and a rate's count — of however many the kind
+   of cell in the rectangle is set to read as. The 10px inside a reading against
+   the 14px between two is what groups a figure with its own tag rather than
+   with the tag to its right; the block used to be one reading and carried the
+   10px itself. */
+.dt-root .dt-sum-item {
+  display: flex; align-items: center; gap: 10px;
+  flex: none; white-space: nowrap;
+}
+/* And a hairline where two readings meet: the 1px the system reserves for a
+   divider, at the alpha the scope pill's border is already drawn at, with the
+   block's own 14px on one side of it and 14px of padding on the other so the
+   strip reads as even columns instead of as pairs. Nothing separates the scope
+   pill, which qualifies the whole block rather than sitting in the row of
+   readings. */
+.dt-root .dt-sum-item + .dt-sum-item {
+  border-left: 1px solid rgba(243, 242, 242, .45);
+  padding-left: 14px;
+}
 .dt-root .dt-sum-tag {
   font-size: 10px; font-weight: 600; letter-spacing: .16em;
   text-transform: uppercase; color: rgba(243, 242, 242, .7);
@@ -1264,6 +1464,7 @@
   font-size: 9px; font-weight: 600; letter-spacing: .14em;
   text-transform: uppercase; color: rgba(243, 242, 242, .7);
   padding: 3px 6px; border: 1px solid rgba(243, 242, 242, .45);
+  flex: none; white-space: nowrap;
 }
 
 /* ---- The metric cog: the flow block's preferences (PORT ADDITION) -----
@@ -1398,9 +1599,14 @@
 .dt-root .dt-metric-group:last-child .dt-metric-opts li:last-child { border-bottom: none; }
 .dt-root .dt-metric-opts li:hover,
 .dt-root .dt-metric-opts li:focus { background: var(--dt-surface); outline: none; }
-.dt-root .dt-metric-opts li[aria-checked="true"] {
+.dt-root .dt-metric-opts li[aria-selected="true"] {
   background: var(--dt-accent); color: var(--dt-reversed);
 }
+/* The one option a press does not answer: a category's last one on. Painted no
+   differently, because it *is* on and it is what the block is reading — only
+   the cursor says the press will do nothing, which is as much as a flat shape
+   with no radius and no shadow can say without inventing a state for it. */
+.dt-root .dt-metric-opts li[aria-disabled="true"] { cursor: default; }
 /* The panel moves focus itself, so the cursor has to be visible on the checked
    option too — and the hover tint is exactly what the accent fill paints over.
    A real ring, inverted on the accent-filled row, after the rule above so it
@@ -1408,7 +1614,7 @@
 .dt-root .dt-metric-opts li:focus-visible {
   outline: 2px solid var(--dt-accent); outline-offset: -2px;
 }
-.dt-root .dt-metric-opts li[aria-checked="true"]:focus-visible {
+.dt-root .dt-metric-opts li[aria-selected="true"]:focus-visible {
   outline-color: var(--dt-reversed);
 }
 

@@ -43,7 +43,6 @@ import {
   COLUMN_TYPES,
   ENUM_OPTIONS,
   OPS_FOR_TYPE,
-  OP_LABELS,
   conditionType,
   describeCondition,
   isActive,
@@ -52,7 +51,8 @@ import {
 } from './filters'
 import { FilterMenu } from './FilterMenu'
 import { CheckIcon, CrossIcon, RevertIcon } from './icons'
-import { COLUMN_LABELS, type ColumnKey } from './types'
+import { EN, readEnum, type Strings } from './i18n'
+import { type ColumnKey } from './types'
 
 const cx = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(' ')
@@ -131,6 +131,13 @@ export interface FilterDockProps {
   onToggleValue: (id: string, option: string) => void
   onRemove: (id: string) => void
   onClearAll: () => void
+  /**
+   * The dictionary in force. It reaches the chips and the picker as a prop
+   * rather than through a context: a chip is already handed nine things by this
+   * component, and one more that visibly changes what it renders is easier to
+   * follow than an ambient one that does the same invisibly.
+   */
+  strings?: Strings
 }
 
 export function FilterDock({
@@ -144,6 +151,7 @@ export function FilterDock({
   onToggleValue,
   onRemove,
   onClearAll,
+  strings: t = EN,
 }: FilterDockProps) {
   /** One popup at a time: the dock is a single strip, not a stack of panels. */
   const [openId, setOpenId] = useState<string | null>(null)
@@ -318,7 +326,7 @@ export function FilterDock({
     <section
       ref={dockRef}
       className={cx('dt-dock', draggingColumn && 'dt-armed', over && 'dt-over')}
-      aria-label="Filter dock"
+      aria-label={t.dock}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -333,8 +341,8 @@ export function FilterDock({
         type="button"
         className="dt-dock-revert"
         disabled={conditions.length === 0}
-        title="Revert — remove every filter"
-        aria-label="Revert — remove every filter"
+        title={t.revert}
+        aria-label={t.revert}
         onClick={clearAll}
       >
         <RevertIcon />
@@ -346,7 +354,7 @@ export function FilterDock({
           drawn around the whole dock. */}
       <div className="dt-dock-rail" ref={railRef} onScroll={measure}>
         <div className="dt-dock-chain">
-          <AddPicker columns={columns} taken={taken} onAdd={onAdd} />
+          <AddPicker columns={columns} taken={taken} onAdd={onAdd} strings={t} />
 
           {conditions.map((c) => (
             <FilterChip
@@ -359,13 +367,14 @@ export function FilterDock({
               onSetValue={onSetValue}
               onToggleValue={onToggleValue}
               onRemove={removeChip}
+              strings={t}
             />
           ))}
 
           {/* The socket does the pointing; this only names the gesture that
               fills it, and it goes for good at the first block. */}
           {conditions.length === 0 ? (
-            <p className="dt-dock-empty">Drag a column here by its ⠿ grip to filter by it.</p>
+            <p className="dt-dock-empty">{t.dockEmpty}</p>
           ) : null}
         </div>
       </div>
@@ -390,6 +399,7 @@ interface FilterChipProps {
   onSetValue: (id: string, patch: { value?: string; value2?: string }) => void
   onToggleValue: (id: string, option: string) => void
   onRemove: (id: string) => void
+  strings: Strings
 }
 
 /**
@@ -413,8 +423,9 @@ function FilterChip({
   onSetValue,
   onToggleValue,
   onRemove,
+  strings: t,
 }: FilterChipProps) {
-  const label = COLUMN_LABELS[c.key]
+  const label = t.columns[c.key]
   const type = conditionType(c)
   const options = ENUM_OPTIONS[c.key] ?? []
   const ranged = c.op === 'between'
@@ -552,7 +563,7 @@ function FilterChip({
         >
           <span className="dt-chip-tag">{label}</span>
           {/* "Any" while the condition is inert — see describeCondition. */}
-          <span className="dt-chip-value">{describeCondition(c)}</span>
+          <span className="dt-chip-value">{describeCondition(c, t)}</span>
           <span className="dt-chip-caret" aria-hidden="true">
             ▼
           </span>
@@ -561,7 +572,7 @@ function FilterChip({
         <button
           type="button"
           className="dt-chip-remove"
-          aria-label={`Remove the ${label} filter`}
+          aria-label={t.removeFilter(label)}
           onClick={() => onRemove(c.id)}
         >
           <CrossIcon />
@@ -572,7 +583,7 @@ function FilterChip({
         <div
           className="dt-chip-pop"
           role="dialog"
-          aria-label={`${label} filter`}
+          aria-label={t.filterDialog(label)}
           style={pop ?? undefined}
           onKeyDown={onPopKeyDown}
         >
@@ -580,10 +591,10 @@ function FilterChip({
             {/* The operator list is the toolbar's old dropdown, kept generic:
                 the values are op keys, the words come from OP_LABELS. */}
             <FilterMenu
-              label="Is"
+              label={t.opTag}
               value={c.op}
               options={OPS_FOR_TYPE[type]}
-              format={(op) => OP_LABELS[op]}
+              format={(op) => t.ops[op]}
               onPick={(op) => onSetOp(c.id, op)}
             />
           </div>
@@ -593,7 +604,7 @@ function FilterChip({
               className="dt-pop-opts"
               role="listbox"
               aria-multiselectable="true"
-              aria-label={`${label} values`}
+              aria-label={t.filterValues(label)}
               onKeyDown={onOptsKeyDown}
             >
               {options.map((option, index) => {
@@ -624,7 +635,7 @@ function FilterChip({
                         anything inherited, so on an accent-filled row it painted
                         the tick navy on navy — an apparently empty box on the
                         one row that is selected. */}
-                    {option}
+                    {readEnum(t, c.key, option)}
                     {on ? <CheckIcon /> : null}
                   </li>
                 )
@@ -635,27 +646,27 @@ function FilterChip({
               {/* The labels are decorative: each input carries its own
                   accessible name, so announcing the word twice helps nobody. */}
               <span className="dt-pop-label" aria-hidden="true">
-                {ranged ? 'From' : 'Value'}
+                {ranged ? t.from : t.value}
               </span>
               <input
                 ref={valueRef}
                 className="dt-pop-input"
                 type={inputType}
                 inputMode={inputMode}
-                aria-label={ranged ? `${label} range start` : `${label} value`}
+                aria-label={ranged ? t.rangeStart(label) : t.filterValue(label)}
                 value={c.value}
                 onChange={(event) => onSetValue(c.id, { value: event.target.value })}
               />
               {ranged ? (
                 <>
                   <span className="dt-pop-label" aria-hidden="true">
-                    To
+                    {t.to}
                   </span>
                   <input
                     className="dt-pop-input"
                     type={inputType}
                     inputMode={inputMode}
-                    aria-label={`${label} range end`}
+                    aria-label={t.rangeEnd(label)}
                     value={c.value2}
                     onChange={(event) => onSetValue(c.id, { value2: event.target.value })}
                   />
@@ -668,10 +679,10 @@ function FilterChip({
             {/* Clear empties the operands and leaves the chip in place; the ×
                 on the chip itself is the one that removes the condition. */}
             <button type="button" disabled={!dirty} onClick={clearOperands}>
-              Clear
+              {t.clear}
             </button>
             <button type="button" onClick={() => close()}>
-              Done
+              {t.done}
             </button>
           </div>
         </div>
@@ -694,11 +705,13 @@ function AddPicker({
   columns,
   taken,
   onAdd,
+  strings: t,
 }: {
   columns: ColumnKey[]
   /** Columns that already have a chip: listed, but not selectable. */
   taken: ReadonlySet<ColumnKey>
   onAdd: (key: ColumnKey) => void
+  strings: Strings
 }) {
   const [open, setOpen] = useState(false)
   /** Which option the keyboard is standing on while the list is open. */
@@ -818,7 +831,7 @@ function AddPicker({
         onClick={() => (open ? close() : openList())}
         onKeyDown={onButtonKeyDown}
       >
-        <span className="dt-dock-tag-text">Add filter</span>
+        <span className="dt-dock-tag-text">{t.addFilter}</span>
         <span className="dt-dock-tag-caret" aria-hidden="true">
           ▼
         </span>
@@ -828,7 +841,7 @@ function AddPicker({
         <ul
           className="dt-dock-add-list"
           role="listbox"
-          aria-label="Add a column filter"
+          aria-label={t.addColumnFilter}
           style={panel ?? undefined}
           onKeyDown={onListKeyDown}
         >
@@ -845,7 +858,7 @@ function AddPicker({
                 tabIndex={-1}
                 onClick={() => pick(key)}
               >
-                {COLUMN_LABELS[key]}
+                {t.columns[key]}
               </li>
             )
           })}

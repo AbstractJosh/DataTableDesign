@@ -11,7 +11,8 @@
  * Checkbox row selection is the opposite: keyed by id and kept across paging.
  * The two are independent and can be live at the same time.
  */
-import { COLUMN_LABELS, type ColumnKey, type DataTableRecord } from './types'
+import { EN, type Strings } from './i18n'
+import { type ColumnKey, type DataTableRecord } from './types'
 
 /** A cell, addressed by its position on the page. */
 export interface CellRef {
@@ -65,14 +66,17 @@ export function rangeSize(rect: RangeRect) {
 }
 
 /** What the live region says when a range changes or is copied. */
-export function describeRange(rect: RangeRect, cols: ColumnKey[], rowCount: number): string {
+export function describeRange(
+  rect: RangeRect,
+  cols: ColumnKey[],
+  rowCount: number,
+  t: Strings = EN,
+): string {
   const size = rangeSize(rect)
   if (size.cells === 1) {
-    return `${COLUMN_LABELS[cols[rect.left]]}, row ${rect.top + 1} of ${rowCount} selected.`
+    return t.cellSelected(t.columns[cols[rect.left]], rect.top + 1, rowCount)
   }
-  return `${size.rows} row${size.rows === 1 ? '' : 's'} by ${size.cols} column${
-    size.cols === 1 ? '' : 's'
-  } selected, ${size.cells} cells.`
+  return t.rangeSelected(size.rows, size.cols, size.cells)
 }
 
 /**
@@ -84,11 +88,13 @@ export function describeRange(rect: RangeRect, cols: ColumnKey[], rowCount: numb
  * it is the part worth saying out loud, since the cells being announced are
  * mostly ones the reader cannot see.
  */
-export function describeWholeColumn(key: ColumnKey, cells: number, pages: number): string {
-  return (
-    `${COLUMN_LABELS[key]} column selected, ${cells} cell${cells === 1 ? '' : 's'}` +
-    (pages > 1 ? ` across ${pages} pages.` : '.')
-  )
+export function describeWholeColumn(
+  key: ColumnKey,
+  cells: number,
+  pages: number,
+  t: Strings = EN,
+): string {
+  return t.columnSelected(t.columns[key], cells, pages)
 }
 
 const cellValue = (record: DataTableRecord, key: ColumnKey) => String(record[key] ?? '')
@@ -201,9 +207,16 @@ export function rangeSum(
   return { total: Number(total.toFixed(decimals)), count, decimals }
 }
 
-/** Grouped in the reader's locale, and never with more decimals than went in. */
-export function formatSum({ total, decimals }: RangeSum): string {
-  return new Intl.NumberFormat(undefined, {
+/**
+ * Grouped in the reader's locale, and never with more decimals than went in.
+ *
+ * The tag is the table's own language when one is passed — the switch beside the
+ * title is what a reader has to go on, so a table set to TÜRKÇE has to point its
+ * decimals the Turkish way whatever the machine underneath it is set to.
+ * Omitted, it falls back to the host's locale, which is what this always did.
+ */
+export function formatSum({ total, decimals }: RangeSum, locale?: string): string {
+  return new Intl.NumberFormat(locale, {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   }).format(total)

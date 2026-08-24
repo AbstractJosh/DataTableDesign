@@ -3,9 +3,10 @@
  *
  * Deliberately not a `<FilterMenu>`, and the difference is not cosmetic.
  * FilterMenu is a select-only combobox: one value, one listbox, and picking
- * closes it. This holds *several* values at once — one preference per category
- * of cell content (numbers, Status values, Favourite season values) — and none
- * of them is "the" value. Worse for the analogy, the button names none of them:
+ * closes it. This holds *several sets* of values at once — one set per category
+ * of cell content (numbers, Status values, Favourite season values), each of
+ * which can hold as many metrics as the reader wants on screen — and none of
+ * them is "the" value. Worse for the analogy, the button names none of them:
  * it is a cog. What it used to print — "SHOW / SUM", the preference the current
  * selection puts in force — was never a setting of this control's own, and it
  * was the flow block's word to say in the first place: the block tags every
@@ -33,21 +34,40 @@
  *   is the first thing they know. Only one section is open at a time, or the
  *   collapse buys nothing back.
  * - **Picking does not close.** The point of a preferences panel is that one
- *   visit can set more than one category. It does not collapse the section
- *   either: the pick that was just made should still be on screen, checked.
+ *   visit can set more than one category — and, now that a category takes
+ *   several metrics, more than one metric inside one category. It does not
+ *   collapse the section either: the option that was just ticked should still be
+ *   on screen, ticked.
  * - **Tab moves between sections**, each headed by its own button and, while
  *   open, holding its own roving tab stop. FilterMenu closes on Tab because it
  *   has exactly one stop; here the popup closes when focus leaves it
  *   altogether, which is the same rule restated for a control that has
  *   several. The arrows are how you go in and back out of a section, which is
  *   the cog's own Down / Up one level further in.
- * - **The arrows move without committing.** ARIA's radio pattern checks the
- *   radio the arrows land on; this port's lists do not, and a preference that
- *   rewrote itself on the way past would be a poor trade for the convention.
+ * - **The arrows move without committing.** Neither the listbox pattern nor the
+ *   radio one it used to follow selects what the arrows land on here, and a
+ *   preference that switched itself on on the way past would be a poor trade
+ *   for either convention.
+ *
+ * The options are a `role="listbox" aria-multiselectable="true"` of
+ * `role="option" aria-selected` — the dock's enum values, which is this port's
+ * shape for "tick as many as you like". They were `role="radio"` in a
+ * `radiogroup` while a category held exactly one metric, and the roles moved
+ * with the semantics: a radio that does not clear its siblings is a checkbox
+ * wearing the wrong name, and the dock had already settled which name this port
+ * gives a multi-select list.
+ *
+ * One rule the dock's list does not have: **a category cannot be emptied.** The
+ * last ticked option in a section is `aria-disabled` and its press does nothing
+ * (`toggleMetricPref` refuses it, so a host driving the reducer is held to the
+ * same rule). "This kind of cell reads as nothing" would look exactly like "the
+ * cells are not one kind of thing", and the flow block already means something
+ * by staying away.
  */
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type FocusEvent,
@@ -55,10 +75,11 @@ import {
 } from 'react'
 
 import { CogIcon } from './icons'
+import { EN, type Strings } from './i18n'
 import {
-  METRIC_GROUPS,
-  metricFor,
-  metricLabel,
+  metricGroups,
+  metricNames,
+  metricsFor,
   type MetricCategory,
   type MetricGroup,
   type MetricKey,
@@ -69,26 +90,43 @@ const cx = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(' ')
 
 export interface MetricMenuProps {
-  /** One pick per category: what each section draws as its current radio. */
+  /** The picks per category: what each section draws as ticked. */
   prefs: MetricPrefs
   /**
-   * The metric the flow block is displaying — the one the button's accessible
+   * The metrics the flow block is displaying — the ones the button's accessible
    * name and tooltip carry, so that what this says tracks the selection rather
-   * than the panel. Passed in rather than worked out here: it comes from the
-   * answer the block already computed, and a second reading of the rectangle
+   * than the panel. Passed in rather than worked out here: they come from the
+   * reading the block already computed, and a second reading of the rectangle
    * could disagree with the first.
    */
-  value: MetricKey
+  value: readonly MetricKey[]
   /**
    * Which category the current selection falls in, or `null` when there is no
    * selection or it answers nothing. Only the cue on the section in force reads
    * it — the button's name comes from `value`.
    */
   inForce: MetricCategory | null
+  /** Switch one metric on or off. The panel stays open either way. */
   onPick: (metric: MetricKey) => void
+  /**
+   * The dictionary in force. Only the words move with it — the metric *keys*
+   * are the same thirteen strings in every language, so a section left open and
+   * an option the keyboard is standing on both survive a change of language.
+   */
+  strings?: Strings
 }
 
-export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
+export function MetricMenu({
+  prefs,
+  value,
+  inForce,
+  onPick,
+  strings: t = EN,
+}: MetricMenuProps) {
+  /* Rebuilt only when the language changes. The groups are read on every render
+     — by `groupFor`, by the panel, by the entry-focus rules — and a fresh array
+     each time would make every one of those a new object for no reason. */
+  const groups = useMemo(() => metricGroups(t), [t])
   const [open, setOpen] = useState(false)
   /**
    * Which option the keyboard is standing on, per section. Sections have their
@@ -121,10 +159,14 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
 
   const refKey = (category: MetricCategory, index: number) => `${category}#${index}`
 
-  /** The section's own pick, as an index — where its tab stop sits by default. */
+  /**
+   * Where a section's tab stop sits by default: its first ticked option. A
+   * section always has one — a category cannot be emptied — and the first is
+   * the least surprising of several, being the one the block prints first.
+   */
   const pickedIn = (group: MetricGroup) => {
-    const key = metricFor(prefs, group.category)
-    return Math.max(0, group.options.findIndex((option) => option.key === key))
+    const picks = metricsFor(prefs, group.category)
+    return Math.max(0, group.options.findIndex((option) => picks.includes(option.key)))
   }
 
   const activeIn = (group: MetricGroup) => active[group.category] ?? pickedIn(group)
@@ -138,7 +180,7 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
   }
 
   const groupFor = (category: MetricCategory | null) =>
-    METRIC_GROUPS.find((candidate) => candidate.category === category) ?? null
+    groups.find((candidate) => candidate.category === category) ?? null
 
   /**
    * Focus into the panel. With everything collapsed — which is how a visit
@@ -155,7 +197,7 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
       focusOption(openGroup, activeIn(openGroup))
       return
     }
-    focusHead(groupFor(inForce) ?? METRIC_GROUPS[0])
+    focusHead(groupFor(inForce) ?? groups[0])
   }
 
   /**
@@ -217,6 +259,10 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
 
   const pick = (group: MetricGroup, index: number) => {
     setActive((at) => ({ ...at, [group.category]: index }))
+    // Sent even for the press that will be refused — the last ticked option of
+    // a category — because the refusal is `toggleMetricPref`'s to make and not
+    // this component's to guess at. What it costs is a no-op dispatch; what it
+    // buys is one rule in one place.
     onPick(group.options[index].key)
     // The panel stays open; the tab stop and DOM focus have to agree on where
     // it now is, and a click on an option is the case where they would not.
@@ -345,17 +391,17 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
         aria-expanded={open}
         /* The cog has no words, so the name carries both halves: what the block
            is reading the selection as, and what pressing this is for. The
-           reading is the block's own to show — it prints the metric as its tag
+           reading is the block's own to show — it prints a tag per metric
            whenever there is a rectangle — but a name that said only "Show" would
-           leave a screen reader with no way to hear which metric is in force
-           without opening the panel. The change a pick makes is announced by the
-           radio's own checked state either way. */
-        aria-label={`Showing ${metricLabel(value)}. Set what each kind of cell selection reads as.`}
+           leave a screen reader with no way to hear which metrics are in force
+           without opening the panel. The change a press makes is announced by
+           the option's own selected state either way. */
+        aria-label={t.metricButton(metricNames(value, t))}
         /* The tooltip is the sighted half of the same sentence, short: it gives
            a pointer user back the readout the words used to carry, which is the
            one thing the cog costs them when nothing is selected and the block is
            not there to say it. */
-        title={`Showing ${metricLabel(value)}`}
+        title={t.showingMetrics(metricNames(value, t))}
         onClick={() => (open ? close() : openPanel())}
         onKeyDown={onButtonKeyDown}
       >
@@ -368,11 +414,11 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
         <div
           className="dt-metric-pop"
           role="dialog"
-          aria-label="What each kind of cell selection reads as"
+          aria-label={t.metricPanel}
           onBlur={onPanelBlur}
         >
-          {METRIC_GROUPS.map((group) => {
-            const picked = metricFor(prefs, group.category)
+          {groups.map((group) => {
+            const picks = metricsFor(prefs, group.category)
             const at = activeIn(group)
             const now = group.category === inForce
             const shown = group.category === expanded
@@ -414,7 +460,7 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
                   <span>
                     {group.label}
                     {now ? (
-                      <span className="dt-sr-only"> — in use for this selection</span>
+                      <span className="dt-sr-only">{t.metricInUse}</span>
                     ) : null}
                   </span>
                   <span className="dt-metric-cat-caret" aria-hidden="true">
@@ -423,7 +469,7 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
                 </button>
 
                 {/* Unmounted rather than hidden while the section is shut. A
-                    collapsed group has no tab stop, no radio in the tree and
+                    collapsed group has no tab stop, no option in the tree and
                     nothing for `getByRole` to find, which is what "collapsed"
                     should mean to everything reading this panel and not only
                     to the eye. `active` is state and outlives the unmount, so
@@ -433,31 +479,45 @@ export function MetricMenu({ prefs, value, inForce, onPick }: MetricMenuProps) {
                   <ul
                     id={listId}
                     className="dt-metric-opts"
-                    role="radiogroup"
+                    /* The dock's enum values, exactly: tick as many as you
+                       like, and the multiselectable flag is what says so. */
+                    role="listbox"
+                    aria-multiselectable="true"
                     aria-labelledby={id}
                     onKeyDown={onGroupKeyDown(group)}
                   >
-                    {group.options.map((option, index) => (
-                      <li
-                        key={option.key}
-                        ref={(el) => {
-                          optionRefs.current.set(refKey(group.category, index), el)
-                        }}
-                        role="radio"
-                        aria-checked={option.key === picked}
-                        /* One tab stop per open section — the option the
-                           keyboard is standing on, which starts on the
-                           section's own pick. */
-                        tabIndex={index === at ? 0 : -1}
-                        /* No `.dt-on` marker class, which is what the port's
-                           listboxes carry: `aria-checked` already says this,
-                           and the stylesheet paints off the attribute so the
-                           two cannot drift apart. */
-                        onClick={() => pick(group, index)}
-                      >
-                        {option.label}
-                      </li>
-                    ))}
+                    {group.options.map((option, index) => {
+                      const on = picks.includes(option.key)
+                      /* The one press this panel does not answer: a category
+                         with nothing ticked would take the block away over
+                         cells that plainly read as something. Marked rather
+                         than silently ignored, and only ever on the one option
+                         holding the section up. */
+                      const held = on && picks.length === 1
+                      return (
+                        <li
+                          key={option.key}
+                          ref={(el) => {
+                            optionRefs.current.set(refKey(group.category, index), el)
+                          }}
+                          role="option"
+                          aria-selected={on}
+                          aria-disabled={held || undefined}
+                          title={held ? t.metricHeld : undefined}
+                          /* One tab stop per open section — the option the
+                             keyboard is standing on, which starts on the
+                             section's first tick. */
+                          tabIndex={index === at ? 0 : -1}
+                          /* No `.dt-on` marker class, which is what the port's
+                             other listboxes carry: `aria-selected` already
+                             says this, and the stylesheet paints off the
+                             attribute so the two cannot drift apart. */
+                          onClick={() => pick(group, index)}
+                        >
+                          {option.label}
+                        </li>
+                      )
+                    })}
                   </ul>
                 ) : null}
               </div>
