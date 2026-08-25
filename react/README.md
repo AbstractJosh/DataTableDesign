@@ -11,9 +11,10 @@ selected cells come to, and pagination — with the prototype's animations kept:
 the measured-height detail expand, the FLIP reorder slide, and the
 caret/chevron rotations.
 
-Design source: `../data-table.html` (the interactive prototype) and
-`../design_handoff_data_table/README.md` (the written spec). `PARITY.md` in this
-folder is the behaviour inventory the port is checked against.
+Design source: `../design_handoff_data_table/README.md` (the written spec) and
+`../design_handoff_data_table/Data Table.dc.html` (the interactive prototype).
+`PARITY.md` in this folder is the behaviour inventory the port is checked
+against; it cites a `data-table.html` that has since been removed.
 
 ---
 
