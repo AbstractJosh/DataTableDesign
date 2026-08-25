@@ -1,0 +1,42 @@
+{
+  // The dev API server. Standalone rather than a project reference: it pulls in
+  // four modules from src/lib, and having those compiled by two composite
+  // projects at once is a fight with TS6305 for nothing. Nothing is emitted
+  // from here — Node strips the types at load time and there is no build step.
+  "compilerOptions": {
+    "target": "ES2023",
+    // DOM is here for the *types* only. The server imports a handful of types
+    // from src/lib, and following them reaches modules that touch the
+    // clipboard — none of which is ever executed here, but all of which has to
+    // typecheck. What actually keeps DOM code out of the server is that Node
+    // loads it: a runtime import of anything browser-shaped fails to resolve,
+    // which `server/modules.test.ts` asserts.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // `endToEnd.test.tsx` renders the real component against the real server,
+    // so this project has to understand JSX even though nothing it ships does.
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    // The server imports `../src/lib/demoData.ts` *with* the extension, because
+    // Node's ESM resolver does not add one. See server/db.ts's header.
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+
+    "noEmit": true,
+    "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom/vitest"]
+  },
+  // scripts/dev.mjs is plain JavaScript and deliberately not listed: adding it
+  // without allowJs would do nothing, and turning allowJs on to check forty
+  // lines of child_process is not a trade worth making.
+  "include": ["server"]
+}

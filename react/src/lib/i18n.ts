@@ -181,6 +181,13 @@ export interface Strings {
   /* ---- the empty state ---- */
   emptyTitle: string
   emptyBody: string
+  /**
+   * Only ever reached through a `source` — an array is already in hand on the
+   * first render, so a table on one is never in either of these states. See
+   * `source.ts`.
+   */
+  loading: string
+  loadFailed: string
 
   /* ---- the footer ---- */
   footCount: (total: number) => WrappedText
@@ -344,6 +351,8 @@ export const EN: Strings = {
 
   emptyTitle: 'No records match',
   emptyBody: 'Clear the search field, or loosen a filter in the dock above.',
+  loading: 'Loading records',
+  loadFailed: 'Could not load the records',
 
   footCount: (total) => ({ before: 'Showing ', after: ` of ${total} entries` }),
   exportLabel: 'Export',
@@ -541,6 +550,8 @@ export const TR: Strings = {
 
   emptyTitle: 'Eşleşen kayıt yok',
   emptyBody: 'Arama alanını temizleyin ya da yukarıdaki raydaki bir filtreyi gevşetin.',
+  loading: 'Kayıtlar yükleniyor',
+  loadFailed: 'Kayıtlar yüklenemedi',
 
   footCount: (total) => ({ before: `${total} kayıttan `, after: ' gösteriliyor' }),
   exportLabel: 'Dışa aktar',

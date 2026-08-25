@@ -104,3 +104,18 @@ body {
   border: 1px solid #e0b48a;
   padding: 3px 7px;
 }
+
+/* Shown in place of the table while the records are being fetched, and for the
+   error that says the API server is not running. Same monospace register as the
+   control strip: this is harness furniture, not part of the screen. */
+.demo-status {
+  padding: 14px 16px;
+  font: 500 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #7d7979;                                   /* --n600 */
+  border: 1px dashed #bab6b6;                       /* --n400 */
+}
+
+.demo-controls__warn.demo-status {
+  color: #8a3b00;
+  border-style: solid;
+}

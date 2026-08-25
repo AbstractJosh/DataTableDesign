@@ -12,7 +12,20 @@
  * The two are independent and can be live at the same time.
  */
 import { EN, type Strings } from './i18n'
-import { type ColumnKey, type DataTableRecord } from './types'
+import { type ColumnKey } from './types'
+
+/**
+ * The only thing a rectangle can reach for.
+ *
+ * Every reader below indexes `rows[r][cols[c]]`, and `cols` holds column keys —
+ * so a row here is anything that can answer to those six names, and a
+ * `DataTableRecord` is one such thing. Widening the parameter from the record
+ * to this is what lets a **whole column** be read without fetching whole
+ * records: a hundred thousand names is a couple of megabytes where a hundred
+ * thousand records is forty, and the other eleven fields were never going to be
+ * looked at. See `columnRows` below.
+ */
+export type CellRow = Partial<Record<ColumnKey, string>>
 
 /** A cell, addressed by its position on the page. */
 export interface CellRef {
@@ -97,7 +110,15 @@ export function describeWholeColumn(
   return t.columnSelected(t.columns[key], cells, pages)
 }
 
-const cellValue = (record: DataTableRecord, key: ColumnKey) => String(record[key] ?? '')
+const cellValue = (record: CellRow, key: ColumnKey) => String(record[key] ?? '')
+
+/**
+ * One column's values, shaped so a whole-column rectangle can be read over them
+ * by the very same functions that read a rectangle of records.
+ */
+export function columnRows(key: ColumnKey, values: string[]): CellRow[] {
+  return values.map((value) => ({ [key]: value }))
+}
 
 /**
  * Excel's own quoting rule: a value carrying a tab, a newline or a double quote
@@ -117,7 +138,7 @@ const escapeHtml = (value: string) =>
 
 /** Tab-separated, one line per row — what a spreadsheet reads as cells. */
 export function rangeText(
-  rows: DataTableRecord[],
+  rows: CellRow[],
   cols: ColumnKey[],
   rect: RangeRect,
 ): string {
@@ -140,7 +161,7 @@ export function rangeText(
  * into a rich-text editor as a real table.
  */
 export function rangeHtml(
-  rows: DataTableRecord[],
+  rows: CellRow[],
   cols: ColumnKey[],
   rect: RangeRect,
 ): string {
@@ -176,7 +197,7 @@ export interface RangeSum {
  * them, and one lone number is not a sum worth floating a panel for.
  */
 export function rangeSum(
-  rows: DataTableRecord[],
+  rows: CellRow[],
   cols: ColumnKey[],
   rect: RangeRect,
 ): RangeSum | null {

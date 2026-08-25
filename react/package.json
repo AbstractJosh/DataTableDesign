@@ -24,9 +24,12 @@
     "dist"
   ],
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "node server/index.ts",
+    "dev:web": "vite",
+    "db:seed": "node server/seed.ts",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

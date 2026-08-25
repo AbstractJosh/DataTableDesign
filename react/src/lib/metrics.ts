@@ -49,14 +49,10 @@
  * Nothing here touches React or the DOM. It takes the page's rows, the column
  * order and the rectangle, and hands back strings that are ready to render.
  */
-import { formatSum, type RangeRect } from './cellRange'
+import { formatSum, type CellRow, type RangeRect } from './cellRange'
 import { ENUM_OPTIONS } from './filters'
 import { EN, LOCALE_TAGS, readEnum, type Strings } from './i18n'
-import {
-  DEFAULT_COLUMNS,
-  type ColumnKey,
-  type DataTableRecord,
-} from './types'
+import { DEFAULT_COLUMNS, type ColumnKey } from './types'
 
 /* ---- the metric keys ----------------------------------------------- */
 
@@ -573,7 +569,7 @@ const number = (t: Strings, value: number, min: number, max: number) =>
 
 /** Every non-blank cell of the rectangle, trimmed, in reading order. */
 function rangeCells(
-  rows: DataTableRecord[],
+  rows: CellRow[],
   cols: ColumnKey[],
   rect: RangeRect,
 ): string[] {
@@ -623,7 +619,7 @@ function detect(cells: string[]): MetricCategory | null {
  * the same reason `rangeMetrics` is not: a host is never handed a rectangle.
  */
 export function rangeCategory(
-  rows: DataTableRecord[],
+  rows: CellRow[],
   cols: ColumnKey[],
   rect: RangeRect,
 ): MetricCategory | null {
@@ -859,7 +855,7 @@ function readAs(
  * category where nothing at all answers comes back `null`.
  */
 export function rangeMetrics(
-  rows: DataTableRecord[],
+  rows: CellRow[],
   cols: ColumnKey[],
   rect: RangeRect,
   prefs: MetricPrefs = DEFAULT_METRIC_PREFS,

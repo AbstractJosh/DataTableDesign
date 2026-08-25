@@ -65,7 +65,8 @@ own the list.
 
 | Prop | Type | Default | |
 |---|---|---|---|
-| `records` | `DataTableRecord[]` | — | Controlled record list. |
+| `source` | `RecordSource` | an array source | Where the rows come from, a page at a time. See **Windowed data**. |
+| `records` | `DataTableRecord[]` | — | Controlled record list. Ignored when `source` is set. |
 | `defaultRecords` | `DataTableRecord[]` | the demo set | Initial list when uncontrolled. |
 | `onRecordsChange` | `(next) => void` | — | Add, edit, delete, reorder. |
 | `columns` | `ColumnKey[]` | all six | Initial column order. The header grips own it from then on; nothing puts it back. |
@@ -473,10 +474,135 @@ unique ids continuing the `REC-4820 + 7i` series, unique emails, canonical
 format, all twelve status×season pairs reachable, and case counts spread wide
 enough that a sum, a mean and a median over a run read differently.
 
-The dev harness (`npm run dev`) runs on **1000** and has a `records` control for
-17 / 100 / 1000 / 5000. Eight rows over two pages say nothing about how the
-pager, a whole-column selection or the search behave at the size this will
-actually be used at.
+The dev harness no longer calls it directly — its records come out of SQLite
+now (below), and the generator seeds that instead. Its `rows` control asks the
+server for 17 / 1,000 / 10,000 / 100,000, opening on a thousand. Eight rows over
+two pages say nothing about how the pager, a whole-column selection or the
+search behave at the size this will actually be used at.
+
+## Windowed data
+
+With `records`, the component holds every row it might show and slices a page
+out of the middle. That is right for the seventeen it ships with and wrong for a
+hundred thousand, where the array is 40 MB of JSON before the first row is
+drawn and every keystroke in the search box is a pass over all of it.
+
+Pass a **`source`** instead and the table asks for the page it is about to draw:
+
+```tsx
+import { DataTable, createRecordsClient, createRemoteSource } from '@alp/data-table'
+
+const source = createRemoteSource(createRecordsClient())   // defaults to /api
+
+<DataTable source={source} />
+```
+
+That is the whole change. The screen is identical — same pager, same filter
+dock, same everything — and what moved is who does the work:
+
+| | `records` | `source` |
+|---|---|---|
+| in the browser | every record | the page on screen |
+| filter, search, sort | in JavaScript, per keystroke | in SQL, per query |
+| the two header counts | `length` of two arrays | answered with the page |
+| a whole column | already in hand | one request for that column's values |
+| an edit | a new array through `onRecordsChange` | one statement, then a re-query |
+
+A source answers six questions, and the list is short because each one is
+something the screen actually does — `page`, `columnValues`, `recordsByIds`,
+`collect`, `nextId`, `apply`. `src/lib/source.ts` documents them, and
+`PARITY.md` records the whole deviation as DEV-24.
+
+**A source may be synchronous.** `arraySource` is, and it is what the component
+builds for itself when you pass `records`: it is asked during render, exactly as
+the old inline derive was, so there is no effect, no loading state and no extra
+paint. An asynchronous one is driven by an effect instead — its query is
+debounced by 180ms when the *filter* changes (never when only the page does), the
+previous rows stay on screen marked `aria-busy` while the next ones load, and
+before the first page arrives the body holds row-shaped placeholders so nothing
+jumps.
+
+Writing your own is a matter of answering those six:
+
+```tsx
+const source: RecordSource = {
+  synchronous: false,
+  page: ({ offset, limit, q, where, sort, locale }) => api.page(...),
+  columnValues: (key, filter) => api.column(key, ...),
+  recordsByIds: (ids) => api.byIds(ids),
+  nextId: () => api.nextId(),
+  apply: (change) => api.write(change),   // omit for read-only
+}
+```
+
+`deriveRecords` — filter by the chips, then by the search, then sort — is
+exported so a source of any kind can reproduce the component's own order
+exactly. `server/query.test.ts` and `server/source.test.ts` are what hold the
+SQLite one to it.
+
+One thing does not survive the round trip: **the FLIP slide on a row reorder**.
+It measures before the change and inverts after it, and with the rows arriving a
+request later there is nothing to measure — so a drag on a source lands without
+the animation. Everything else animates as it always did, and `records` is
+unaffected.
+
+### Long pages
+
+The rows-per-page box has no ceiling, so `visible` can be thousands of rows even
+though the data arrives a page at a time. Above 80 rows the table renders only
+what is near the viewport and pads the rest with two spacers, so the scrollbar
+still means what it means. It stands down — rendering the page whole — below
+that threshold, while any detail pane is open or a draft row is up (the offsets
+assume a uniform row height), and anywhere nothing has been laid out. The
+default eight rows never touch it. Recorded as DEV-25.
+
+## The demo's records come from SQLite
+
+`npm run dev` starts two things: the Vite dev server, and a local API in front
+of a SQLite database seeded with **100,000 records** from that same generator.
+`server/` is dev tooling; the published package does not ship it.
+
+```
+npm run dev          # API on :5174, Vite on :5173 proxying /api to it
+npm run dev:api      # just the API
+npm run db:seed -- 250000
+```
+
+The harness opens **windowed** and has a `data` control to switch between the
+two ways of feeding the same screen, which is the only honest way to see what
+the difference costs:
+
+| | requests to draw the first page | in the browser |
+|---|---|---|
+| `windowed` (a `source`) | 1, a few KB | 8 records |
+| `whole set` (`records`) | 1, **39.7 MB** (3.3 MB gzipped, ~1.6s) | 100,000 records |
+
+The strip counts requests and bytes as you use the screen, so a search, a sort
+and a page turn each show what they cost.
+
+Whole-set mode also shows what `onRecordsChange` costs a host that keeps its
+records remotely: every change arrives as the whole next array, so the harness
+diffs it — `diffRecords` sends the one record, or the one moved id, that
+actually changed rather than posting a hundred thousand rows back per rename.
+Windowed mode needs none of that; the source is told what happened.
+
+```tsx
+import { createRecordsClient, createRemoteSource, diffRecords } from '@alp/data-table'
+
+const client = createRecordsClient()                  // defaults to /api
+
+// windowed
+<DataTable source={createRemoteSource(client)} />
+
+// whole set
+const { records } = await client.all()
+const payload = diffRecords(previous, next)
+if (payload) await client.sync(payload)
+```
+
+`server/README.md` has the full route list, what the derived columns are for,
+why row position is a float, and the one place SQL ordering and `localeCompare`
+can disagree.
 
 ## Exporting
 
@@ -651,11 +777,17 @@ swap the handlers and keep the FLIP hook.
 
 ```
 npm install
-npm run dev        # the demo at localhost:5173, with a prop harness
-npm test           # 226 behaviour tests (vitest + jsdom)
-npm run typecheck
+npm run dev        # the API on :5174 and the demo on :5173, together
+npm run dev:api    # just the API server
+npm run dev:web    # just Vite — the table will show an error strip without the API
+npm run db:seed    # rebuild server/records.db from the generator
+npm test           # 635 tests (vitest — jsdom for the component, node for the server)
+npm run typecheck  # the package, then the server project
 npm run build      # dist/index.js + dist/data-table.css + dist/fonts
 ```
+
+`server/records.db` is git-ignored and built on first run. The server is dev
+tooling — `files` in `package.json` ships `dist` only.
 
 ## Notes on the port
 
