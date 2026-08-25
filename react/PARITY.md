@@ -1,7 +1,11 @@
 # PARITY.md — behavioural inventory of the prototype
 
-Source of truth: `../data-table.html` (the vanilla-JS prototype). Never modify it.
-Secondary: `../design_handoff_data_table/README.md` (the written design spec) for token values.
+Source of truth: the vanilla-JS prototype that lived at `../data-table.html`, now
+removed — every `data-table.html:NNN` citation below is a line reference into it,
+kept because it is the record of what each item was read from. Its surviving
+counterpart is `../design_handoff_data_table/Data Table.dc.html` (the same screen
+in the dc-runtime format), and `../design_handoff_data_table/README.md` is the
+written design spec for token values.
 
 Every item below is an **observable behaviour of the prototype** that the React port in
 `react/src/lib/` must reproduce, unless it appears in
