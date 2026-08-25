@@ -17,7 +17,8 @@
  * flatten to — a list of columns, a list of records, and which of the three it
  * came from.
  */
-import { COLUMN_LABELS, type ColumnKey, type DataTableRecord } from './types'
+import type { CellRow } from './cellRange'
+import { COLUMN_LABELS, type ColumnKey } from './types'
 
 /** Which selection the file was built from. Decides its default name. */
 export type ExportSource = 'cells' | 'column' | 'rows'
@@ -26,8 +27,17 @@ export interface ExportPlan {
   source: ExportSource
   /** The columns the file carries, left to right, in their on-screen order. */
   columns: ColumnKey[]
-  /** The records its rows come from, top to bottom. */
-  records: DataTableRecord[]
+  /**
+   * The rows of the file, top to bottom.
+   *
+   * `CellRow` rather than `DataTableRecord` because of the whole-column case:
+   * a file of one column needs one column's values, and fetching a hundred
+   * thousand whole records to write a hundred thousand names would be forty
+   * megabytes spent on eleven fields nothing here reads. `onExport` is the
+   * only thing that wants the records themselves, and it is handed them
+   * separately — see `RecordSource.collect`.
+   */
+  records: CellRow[]
 }
 
 /** Cells in the file, its header row excluded. */

@@ -59,6 +59,7 @@ export {
   COLUMN_LABELS,
   COLUMN_WIDTHS,
   DEFAULT_COLUMNS,
+  RECORD_FIELDS,
   SEASONS,
   STATUSES,
   type ColumnKey,
@@ -66,6 +67,7 @@ export {
   type DataTableRecord,
   type DraftRecord,
   type MotionPreference,
+  type RecordField,
   type RecordStatus,
   type Season,
   type SortState,
@@ -124,3 +126,56 @@ export {
   type FilterCondition,
   type FilterOp,
 } from './lib/filters'
+/**
+ * Talking to the SQLite server in `server/`, for a host that wants to keep this
+ * screen's records where the dev harness keeps them.
+ *
+ * None of it is needed to use `DataTable`, which takes an array and reports an
+ * array and has no idea a server exists. It is exported because the wire types
+ * are the contract a windowed, virtualised table will be built against, and
+ * because `diffRecords` is the piece that makes `onRecordsChange` affordable at
+ * a hundred thousand rows: it turns "here is the whole list again" back into
+ * the one record, or the one moved id, that actually changed.
+ */
+export {
+  RecordsApiError,
+  createRecordsClient,
+  createRemoteSource,
+  detectMove,
+  diffRecords,
+  recordQueryParams,
+  type AllRecords,
+  type RecordWindow,
+  type RecordWindowQuery,
+  type RecordsClient,
+  type RecordsClientOptions,
+  type SyncPayload,
+  type SyncResult,
+} from './lib/recordsApi'
+/**
+ * Where the rows come from.
+ *
+ * The default is still an array and nothing about `records` changed — this is
+ * for a host whose table is too big to hand over, which asks for a page at a
+ * time instead. `createRemoteSource` is the one for the SQLite server in
+ * `server/`; `arraySource` is what the component builds for itself, exported
+ * because a host wrapping or decorating a source needs the plain one to start
+ * from. `deriveRecords` is the filter-then-sort the table has always done,
+ * exported so a source of any other kind can reproduce it exactly.
+ */
+export {
+  applyToArray,
+  arraySource,
+  deriveRecords,
+  filterKey,
+  nextRecordId,
+  queryKey,
+  type Awaitable,
+  type RecordSource,
+  type RecordsChange,
+  type SourceFilter,
+  type SourcePage,
+  type SourceQuery,
+} from './lib/source'
+export { compareCells } from './lib/sort'
+export { columnRows, type CellRow } from './lib/cellRange'

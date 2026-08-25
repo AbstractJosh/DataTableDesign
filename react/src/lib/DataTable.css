@@ -1085,6 +1085,51 @@
 .dt-root .dt-empty-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
 .dt-root .dt-empty-body { font-size: 13px; color: var(--dt-n700); }
 
+/* A query that failed is not a result that was empty. The red is the system's
+   destructive/negative accent, which is exactly what this is — see the note on
+   --dt-danger; the navy accent is for things that worked. */
+.dt-root .dt-load-failed { border-bottom-color: var(--dt-danger); }
+.dt-root .dt-load-failed .dt-empty-title { color: var(--dt-danger); }
+
+/* ---- 6b. Waiting on a source ----
+   Only ever on screen for a table driven by an async `source` — one given
+   `records` has its rows on the first render and never passes through here. */
+
+/* Rows that have not arrived yet. Row-shaped rather than a spinner: the table
+   keeps its height and the footer does not jump up and then back down when the
+   real rows land. Flat and square like everything else, and deliberately at
+   --dt-n300 rather than animated — a shimmer would be the one gradient in a
+   design system that has none. */
+.dt-root .dt-skeleton-cell {
+  padding: var(--dt-cell-pad-y) 16px; border-bottom: 1px solid var(--dt-n300);
+}
+.dt-root .dt-skeleton-bar {
+  display: block; height: 10px; width: 40%;
+  background: var(--dt-n300);
+}
+/* Staggered widths, so it reads as rows of different content rather than as a
+   pattern. Six is enough that the repeat is not visible at any page size. */
+.dt-root .dt-skeleton-row:nth-child(6n + 2) .dt-skeleton-bar { width: 62%; }
+.dt-root .dt-skeleton-row:nth-child(6n + 3) .dt-skeleton-bar { width: 33%; }
+.dt-root .dt-skeleton-row:nth-child(6n + 4) .dt-skeleton-bar { width: 71%; }
+.dt-root .dt-skeleton-row:nth-child(6n + 5) .dt-skeleton-bar { width: 47%; }
+.dt-root .dt-skeleton-row:nth-child(6n) .dt-skeleton-bar { width: 55%; }
+
+/* A newer page is on its way and the one underneath is the previous answer.
+   Drained rather than covered: the rows stay readable and stay clickable, which
+   is the whole reason the old page is still there. No transition on the way
+   *in* — a query that returns in 20ms should not paint a fade — and a slow one
+   back out so the return does not flash. */
+.dt-root[data-dt-busy] .dt-table-scroll { opacity: .55; }
+.dt-root .dt-table-scroll { transition: opacity 140ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .dt-root .dt-table-scroll { transition: none; }
+}
+
+/* The rows a long page is not rendering, standing in for their height. Holds no
+   content and must add none of its own — the height is the whole of it. */
+.dt-root .dt-vpad td { padding: 0; border: 0; }
+
 /* ---- 6. Footer ---- */
 .dt-root .dt-foot {
   display: flex; align-items: center; justify-content: space-between;

@@ -27,6 +27,7 @@ import './DataTable.css'
 
 import {
   clampRect,
+  columnRows,
   describeRange,
   describeWholeColumn,
   rangeHtml,
@@ -47,11 +48,10 @@ import {
 } from './csv'
 import { DetailPane } from './DetailPane'
 import { COLUMN_DRAG_MIME, FilterDock } from './FilterDock'
-import { COLUMN_TYPES, ENUM_OPTIONS, matchesAll } from './filters'
+import { COLUMN_TYPES, ENUM_OPTIONS } from './filters'
 import {
   LOCALES,
   LOCALE_NAMES,
-  LOCALE_TAGS,
   STRINGS,
   readCell,
   readEnum,
@@ -82,8 +82,12 @@ import {
 import { ALP_LOGO_DATA_URI } from './logo'
 import { createDemoRecords } from './demoData'
 import { DRAFT_ID, initialState, reducer, type TableAction } from './state'
+import { arraySource, filterKey, isPromise } from './source'
+import type { Awaitable, RecordsChange, SourceFilter, SourcePage } from './source'
+import { useColumnValues, useSourceWindow } from './useSource'
 import { useFlipReorder, type FlipAxis } from './useFlipReorder'
 import { useMotionEnabled } from './useMotion'
+import { VIRTUAL_THRESHOLD, useRowWindow } from './useRowWindow'
 import {
   COLUMN_WIDTHS,
   DEFAULT_COLUMNS,
@@ -109,20 +113,6 @@ const MONTHS = [
 function todayLabel(): string {
   const d = new Date()
   return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]}, ${d.getFullYear()}`
-}
-
-/**
- * The prototype stripped every non-digit out of the id and took the max
- * (data-table.html:855-860), which is fine for its closed REC-4813 series but
- * overflows into exponential notation — and then repeats itself — against a
- * host's UUIDs or timestamped ids. Only ids that really are `REC-<int>` feed
- * the series; anything else falls through to the seed.
- */
-function nextId(records: DataTableRecord[]): string {
-  const nums = records
-    .map((r) => Number(/^REC-(\d+)$/.exec(String(r.id))?.[1]))
-    .filter((n) => Number.isSafeInteger(n))
-  return 'REC-' + ((nums.length ? Math.max(...nums) : 4813) + 7)
 }
 
 /**
@@ -233,26 +223,6 @@ const cx = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(' ')
 
 const clamp = (n: number, low: number, high: number) => Math.max(low, Math.min(high, n))
-
-/**
- * The prototype sorts every column with `localeCompare`, which is lexicographic
- * even for dates — that stands, and swapping in real comparators is still the
- * note for whoever wires this to an API. Two numbers are the exception: text
- * order puts 100 before 20, which is plainly wrong on a column of case counts
- * and would be read as a bug in the sum beside it.
- */
-function compareCells(a: string, b: string, locale?: string): number {
-  const x = Number(a)
-  const y = Number(b)
-  // `Number('')` is 0, so a blank must not pass for a number here
-  if (a.trim() && b.trim() && Number.isFinite(x) && Number.isFinite(y)) return x - y
-  /* The table's own language decides the collation, not the host machine's.
-     Turkish orders ç after c and ş after s rather than folding them together,
-     so a name column sorted on an English laptop would put Çetin in the wrong
-     place for the person reading it. Undefined keeps the host's own order, which
-     is what this did before there were two languages. */
-  return a.localeCompare(b, locale)
-}
 
 /**
  * With the drag moved onto the grip, the browser's default drag image would be
@@ -802,12 +772,61 @@ function DraftRow({
   )
 }
 
+/**
+ * The stand-in for rows a long page is not rendering.
+ *
+ * Two of these bracket the window — one for everything above it, one for
+ * everything below — so the table keeps the height it would have had and the
+ * scrollbar keeps meaning what it meant. Carries no `data-id`, which is how
+ * `useRowWindow` knows not to measure one of them as though it were a row.
+ */
+function RowSpacer({ height, cols }: { height: number; cols: number }) {
+  if (height <= 0) return null
+  return (
+    <tbody className="dt-vpad" aria-hidden="true">
+      <tr>
+        <td colSpan={cols + 3} style={{ height, padding: 0, border: 0 }} />
+      </tr>
+    </tbody>
+  )
+}
+
+/**
+ * What stands in for the rows before the first page has ever arrived.
+ *
+ * Only an asynchronous source can be in this state — an array has its rows on
+ * the first render — and it lasts one round trip. A row-shaped placeholder
+ * rather than a spinner because the thing being waited for is rows: the table
+ * keeps its height, the footer does not jump up and then back down, and the
+ * count in it is `rowsPerPage`, so what appears is the same size as what
+ * replaces it.
+ *
+ * `colSpan` rather than a cell per column: this is furniture, and mirroring
+ * `RecordRow`'s cell structure would be a second copy of it to keep in step
+ * for no gain a reader could point at. The header above has already fixed the
+ * column widths.
+ */
+function SkeletonRows({ rows, cols, label }: { rows: number; cols: number; label: string }) {
+  return (
+    <tbody className="dt-skeleton" aria-hidden="true" data-dt-label={label}>
+      {Array.from({ length: rows }, (_, i) => (
+        <tr key={i} className="dt-row dt-skeleton-row">
+          <td className="dt-skeleton-cell" colSpan={cols + 3}>
+            <span className="dt-skeleton-bar" />
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  )
+}
+
 /* ------------------------------------------------------------------ *
  * The table
  * ------------------------------------------------------------------ */
 
 export function DataTable(props: DataTableProps) {
   const {
+    source: propSource,
     records: controlledRecords,
     defaultRecords,
     onRecordsChange,
@@ -855,7 +874,6 @@ export function DataTable(props: DataTableProps) {
   const [internalLocale, setInternalLocale] = useState<Locale>(defaultLocale)
   const locale = controlledLocale ?? internalLocale
   const t = stringsFor(locale)
-  const localeTag = LOCALE_TAGS[locale]
   /* One dictionary object per language, so `t` is referentially stable and safe
      in a dependency array. The ref is for the effects that must *not* list it:
      the export box's focus effect would re-run and yank the caret back to the
@@ -963,54 +981,143 @@ export function DataTable(props: DataTableProps) {
   /** Set by whichever handler should pull DOM focus onto the moving corner. */
   const focusCell = useRef(false)
 
-  /* ---- derive: filter (conditions, then query) -> sort -> paginate -> slice ---- */
-  const filtered = useMemo(() => {
-    /* `toLocaleLowerCase`, and the cell below folded the same way. Turkish is
-       the reason: `'İSTANBUL'.toLowerCase()` is an i with a *combining dot*,
-       which never equals a typed `i`, so a search for "istanbul" found nothing
-       in a column that plainly held it. Folding both sides with the table's own
-       tag is the fix, and it costs English nothing — `en-GB` folds exactly as
-       the unqualified method does. */
-    const q = state.query.trim().toLocaleLowerCase(localeTag)
+  /* ---- derive: filter (conditions, then query) -> sort -> paginate -> slice --- *
+   * All four steps still happen in that order and the order is still the spec.
+   * What changed is *who* runs them: the source does, so the same four steps can
+   * be an array pass or a `SELECT`, and the component below cannot tell which.
+   *
+   * `arraySource` is the default and is synchronous, so with `records` this is
+   * the same `useMemo` it always was — one derive per render, no effect, no
+   * loading state. See `source.ts`.
+   * ---------------------------------------------------------------------- */
 
-    const list = records.filter((r) => {
-      // PORT ADDITION: the dock's chips, ANDed, in place of the prototype's one
-      // status dropdown. Chips with no operand yet are skipped rather than
-      // matching nothing — see isActive in filters.ts.
-      if (!matchesAll(r, state.conditions)) return false
-      if (!q) return true
-      // PORT: the prototype's fourth searched field was the phone number, which
-      // this column set no longer carries. A case count is not something anyone
-      // searches for, so the query stays on the three text fields — `email`
-      // among them, which is still on the record now that it shows in the
-      // detail pane rather than in a column.
-      return `${r.name} ${r.email} ${r.address}`.toLocaleLowerCase(localeTag).includes(q)
-    })
-
-    if (!state.sort) return list
-
-    const { key, dir } = state.sort
-    return list
-      .slice()
-      .sort(
-        (a, b) =>
-          compareCells(String(a[key]), String(b[key]), localeTag) *
-          (dir === 'asc' ? 1 : -1),
-      )
-  }, [records, state.conditions, state.query, state.sort, localeTag])
-
-  const pageCount = Math.max(1, Math.ceil(filtered.length / rowsPerPage))
-  const page = Math.min(state.page, pageCount - 1)
-  const start = page * rowsPerPage
-  const visible = filtered.slice(start, start + rowsPerPage)
-
-  // Derived from the records rather than from the selection map: a controlled
-  // host can drop a record from under us, and a checked id it has removed must
-  // not keep showing up in the Selected count or in onSelectionChange.
-  const selectedIds = useMemo(
-    () => records.filter((r) => state.selected[r.id]).map((r) => r.id),
-    [records, state.selected],
+  const filter = useMemo<SourceFilter>(
+    () => ({ q: state.query, where: state.conditions, sort: state.sort, locale }),
+    [state.query, state.conditions, state.sort, locale],
   )
+
+  /**
+   * Bumped after a write lands, to tell an asynchronous source its answers are
+   * stale. A synchronous one needs no such thing: its records changed, so the
+   * array changed, so `arraySource` below is a new object and every memo keyed
+   * on it has already re-run.
+   */
+  const [dataVersion, setDataVersion] = useState(0)
+
+  /* Read through a ref so the source's identity depends on the records alone.
+     A host writing `onRecordsChange={(next) => setRows(next)}` inline rebuilds
+     `commitRecords` on every render, and with it the source, and with it every
+     memo keyed on the source — which is the derive this whole file is trying
+     not to run twice. */
+  const commitRef = useRef(commitRecords)
+  commitRef.current = commitRecords
+  const commit = useCallback((next: DataTableRecord[]) => commitRef.current(next), [])
+
+  const source = useMemo(
+    () => propSource ?? arraySource(records, commit),
+    [propSource, records, commit],
+  )
+
+  /**
+   * Every edit, delete, new record and drag goes through here.
+   *
+   * The table used to build the whole next array and hand it over, which is
+   * what `onRecordsChange` still receives — the array source rebuilds it, so
+   * nothing about that prop changed. What the *table* now says is only what it
+   * did, which is the one description both a splice and an `UPDATE` can be
+   * written from.
+   *
+   * A synchronous source has already applied it by the time this returns and
+   * its new array re-renders everything. An asynchronous one is told, and the
+   * window is re-queried once it confirms — optimistically leaving the old row
+   * on screen in the meantime, because the alternative is a table that blinks
+   * on every keystroke of an inline edit.
+   */
+  const applyChange = useCallback(
+    (change: RecordsChange) => {
+      const result = source.apply?.(change)
+      if (!result || !isPromise(result)) return
+      void result.then(
+        () => setDataVersion((n) => n + 1),
+        (cause: unknown) => {
+          // The write failed and the screen is now ahead of the data. Re-query
+          // rather than leave it that way; the row snapping back is the honest
+          // report, and a host watching its own source will have seen the throw.
+          setDataVersion((n) => n + 1)
+          if (import.meta.env?.DEV) console.error('[DataTable] write failed', cause)
+        },
+      )
+    },
+    [source],
+  )
+
+  /*
+   * Asked for at the page the *reducer* is standing on, which can be past the
+   * end of a set a filter has just narrowed. The window comes back with the
+   * matching total either way, and that total is what the clamp below needs —
+   * so this is the probe, and `shown` a few lines down is the answer.
+   */
+  const probe = useMemo(
+    () => ({ ...filter, offset: state.page * rowsPerPage, limit: rowsPerPage }),
+    [filter, state.page, rowsPerPage],
+  )
+  const windowState = useSourceWindow(source, probe, dataVersion)
+
+  const pageCount = Math.max(1, Math.ceil(windowState.page.total / rowsPerPage))
+  const page = Math.min(state.page, pageCount - 1)
+
+  /*
+   * The correction, for the render on which the stored page outran the set.
+   *
+   * A synchronous source can simply be asked again — its derive is cached, so
+   * the second call is a `slice` — and the page never flickers, which is the
+   * behaviour this had before there were sources at all. An asynchronous one
+   * cannot be asked twice in one render, so it shows the previous page for one
+   * beat and the `clampPage` effect further down brings the stored page back
+   * into range, which re-queries at the right offset.
+   */
+  const filterFingerprint = filterKey(filter)
+  const corrected = useMemo(
+    () =>
+      source.synchronous && page !== state.page
+        ? (source.page({ ...filter, offset: page * rowsPerPage, limit: rowsPerPage }) as SourcePage)
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [source, page, state.page, rowsPerPage, filterFingerprint],
+  )
+
+  const shown = corrected ?? windowState.page
+  const visible = shown.rows
+  /** Rows matching the filter — the footer's count and the pager's arithmetic. */
+  const matchingCount = shown.total
+  /** Rows before any filter — the header's first stat. */
+  const totalCount = shown.grandTotal
+  const start = page * rowsPerPage
+  const busy = windowState.loading
+  const sourceError = windowState.error
+  /** No page has ever arrived: the body has nothing to show yet, not nothing. */
+  const awaitingFirstPage = windowState.pending && !source.synchronous
+
+  /**
+   * Read back through the source's snapshot when there is one.
+   *
+   * A controlled host can drop a record from under us, and a checked id it has
+   * removed must not keep showing up in the Selected count or in
+   * `onSelectionChange` — so the array source hands over its list and the ids
+   * come back in table order, exactly as they did.
+   *
+   * A remote source has no snapshot and is not asked for one: it owns its data,
+   * nobody can remove a row behind its back, and a round trip per render to
+   * confirm that a hundred ticked ids still exist would be a lot of asking for
+   * an answer that is always yes.
+   */
+  const selectedIds = useMemo(() => {
+    const ticked = Object.keys(state.selected).filter((id) => state.selected[id])
+    const snapshot = source.snapshot?.()
+    if (!snapshot) return ticked
+    const live = new Set(ticked)
+    return snapshot.filter((r) => live.has(r.id)).map((r) => r.id)
+  }, [source, state.selected])
   const selectedCount = selectedIds.length
 
   /* ---- the cell rectangle ------------------------------------------ *
@@ -1037,23 +1144,43 @@ export function DataTable(props: DataTableProps) {
   /* ---- the whole column (PORT ADDITION) ----------------------------- *
    * The other flavour of cell selection, and the one the rectangle cannot
    * express: every value in one column, across every page. It is still a
-   * `RangeRect` — one column wide, top to bottom — but taken over `filtered`
-   * rather than over `visible`, which is the whole difference between the two.
+   * `RangeRect` — one column wide, top to bottom — but taken over every
+   * matching row rather than over `visible`, which is the whole difference
+   * between the two.
    * Everything downstream (the reading, the copy, the announcement) is the
    * existing machinery pointed at that pair instead.
    * ------------------------------------------------------------------ */
   const wholeColumnIndex = state.wholeColumn ? state.cols.indexOf(state.wholeColumn) : -1
   const wholeColumnRect = useMemo<RangeRect | null>(
     () =>
-      wholeColumnIndex >= 0 && filtered.length > 0
+      wholeColumnIndex >= 0 && matchingCount > 0
         ? {
             top: 0,
-            bottom: filtered.length - 1,
+            bottom: matchingCount - 1,
             left: wholeColumnIndex,
             right: wholeColumnIndex,
           }
         : null,
-    [wholeColumnIndex, filtered.length],
+    [wholeColumnIndex, matchingCount],
+  )
+
+  /**
+   * The column's values, all of them, and only while one is taken.
+   *
+   * This is the single place the table asks for more than a page, and it asks
+   * for the narrowest thing that answers: one column's strings rather than
+   * whole records. `columnRows` then shapes them so the reading, the copy and
+   * the `.csv` can be the very same functions that read a rectangle of records
+   * — a whole-column rectangle is one column wide, so that column is the only
+   * field any of them can reach for.
+   */
+  const columnQuery = useColumnValues(source, state.wholeColumn ?? null, filter, dataVersion)
+  const wholeColumnData = useMemo(
+    () =>
+      state.wholeColumn && columnQuery.values
+        ? columnRows(state.wholeColumn, columnQuery.values)
+        : null,
+    [state.wholeColumn, columnQuery.values],
   )
 
   /**
@@ -1086,16 +1213,21 @@ export function DataTable(props: DataTableProps) {
    * statuses), and the block then stays away. See metrics.ts.
    */
   const reading = useMemo<Reading | null>(() => {
-    // The whole column is read over `filtered`, so the figures cover the pages
-    // the reader cannot see — which is the reason to have taken it.
+    // The whole column is read over every matching row, so the figures cover
+    // the pages the reader cannot see — which is the reason to have taken it.
+    // A remote source is still fetching them on the first render after the
+    // gesture, and the block stays away for that beat rather than showing a
+    // figure for the page alone, which would be wrong rather than incomplete.
     if (wholeColumnRect) {
-      const answer = rangeMetrics(filtered, state.cols, wholeColumnRect, state.metrics)
+      if (!wholeColumnData) return null
+      const rect = { ...wholeColumnRect, bottom: wholeColumnData.length - 1 }
+      const answer = rangeMetrics(wholeColumnData, state.cols, rect, state.metrics)
       return answer && { ...answer, allPages: pageCount > 1 }
     }
     if (!rangeBox) return null
     const answer = rangeMetrics(visible, state.cols, rangeBox, state.metrics)
     return answer && { ...answer, allPages: false }
-  }, [wholeColumnRect, rangeBox, filtered, visible, state.cols, state.metrics, pageCount])
+  }, [wholeColumnRect, wholeColumnData, rangeBox, visible, state.cols, state.metrics, pageCount])
 
   /**
    * The metrics the block is displaying, and the section of the selector that
@@ -1162,6 +1294,27 @@ export function DataTable(props: DataTableProps) {
     return () => window.removeEventListener('resize', measureFlow)
   }, [measureFlow, shownReading])
 
+  /* ---- rendering only what can be seen ------------------------------ *
+   * The page size is a box on the toolbar with no ceiling, so `visible` can be
+   * thousands of rows long even though the *data* is now fetched a page at a
+   * time. Below the threshold — which the default eight is nowhere near — this
+   * is null and every row renders, exactly as before. See `useRowWindow.ts`
+   * for the two other cases it stands down for.
+   * -------------------------------------------------------------------- */
+  const anyRowOpen = visible.some(
+    (r) => state.expanded[r.id] || state.collapsing[r.id] !== undefined || state.entering[r.id],
+  )
+  const rowWindow = useRowWindow(
+    visible.length > VIRTUAL_THRESHOLD && !anyRowOpen && !state.draft,
+    tableRef,
+    visible.length,
+  )
+  /** The slice actually rendered, and the index each row keeps within the page. */
+  const rendered = rowWindow
+    ? visible.slice(rowWindow.first, rowWindow.first + rowWindow.count)
+    : visible
+  const renderedFrom = rowWindow ? rowWindow.first : 0
+
   // One tab stop for the whole grid: the moving corner owns it, or the first
   // cell when nothing is selected yet.
   const tabCell: CellRef | null =
@@ -1191,16 +1344,16 @@ export function DataTable(props: DataTableProps) {
   const moveRow = useCallback(
     (fromId: string, toId: string) => {
       if (fromId === toId) return
-      const from = records.findIndex((r) => r.id === fromId)
-      const to = records.findIndex((r) => r.id === toId)
-      if (from < 0 || to < 0) return
+      if (fromId === toId) return
       flip('Y')
-      const next = records.slice()
-      next.splice(to, 0, next.splice(from, 1)[0])
-      commitRecords(next)
+      // Which of the two ids ends up above the other is the source's to work
+      // out, and both have to reach the same answer: dropping downwards lands
+      // after the target and dropping upwards lands before it. See
+      // `applyToArray` in source.ts, where that asymmetry is written down.
+      applyChange({ kind: 'move', fromId, toId })
       dispatch({ type: 'rowsReordered' }) // reordering clears any active sort
     },
-    [records, commitRecords, flip],
+    [applyChange, flip],
   )
 
   const moveColumn = useCallback(
@@ -1567,18 +1720,56 @@ export function DataTable(props: DataTableProps) {
    * own, with the reading appended exactly as `announceRange` appends it.
    */
   const selectWholeColumn = (key: ColumnKey) => {
-    const index = state.cols.indexOf(key)
     // Nothing to select in an empty result set, and a column that is not in the
     // order cannot be pointed at.
-    if (index < 0 || filtered.length === 0) return
-
+    if (state.cols.indexOf(key) < 0 || matchingCount === 0) return
     dispatch({ type: 'selectColumn', key })
-
-    const rect = { top: 0, bottom: filtered.length - 1, left: index, right: index }
-    const answer = rangeMetrics(filtered, state.cols, rect, state.metrics, t)
-    const said = describeWholeColumn(key, filtered.length, pageCount, t)
-    announce(answer ? `${said} ${answer.speech}.` : said)
   }
+
+  /**
+   * The sentence for a column that has just been taken.
+   *
+   * In an effect rather than in the handler above, and the reason is the fetch:
+   * the reading is over every matching row, so it cannot be spoken until those
+   * values are in hand, and a handler that awaited them would be asking for the
+   * column a second time when `useColumnValues` is already asking for it once.
+   * A synchronous source settles both within the same commit, so nothing about
+   * the announcement moved for a table on an array.
+   *
+   * The token is what keeps it to one sentence per gesture. Without it every
+   * re-render with the column still taken would say it again — and a language
+   * change deliberately does not re-announce, because the switch says its own
+   * piece and two live-region updates would collide.
+   */
+  const announcedColumn = useRef<string | null>(null)
+  useEffect(() => {
+    if (!state.wholeColumn) {
+      announcedColumn.current = null
+      return
+    }
+    if (!wholeColumnData) return
+
+    const token = `${state.wholeColumn}:${wholeColumnData.length}`
+    if (announcedColumn.current === token) return
+    announcedColumn.current = token
+
+    const index = state.cols.indexOf(state.wholeColumn)
+    if (index < 0) return
+
+    /* The rectangle's own announcement is no use here — it counts rows on the
+       page, and most of what this selects is not on it — so the sentence is its
+       own, with the reading appended exactly as `announceRange` appends it. */
+    const rect = { top: 0, bottom: wholeColumnData.length - 1, left: index, right: index }
+    const answer = rangeMetrics(wholeColumnData, state.cols, rect, state.metrics, stringsRef.current)
+    const said = describeWholeColumn(
+      state.wholeColumn,
+      wholeColumnData.length,
+      pageCount,
+      stringsRef.current,
+    )
+    setAnnouncement(answer ? `${said} ${answer.speech}.` : said)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.wholeColumn, wholeColumnData, state.cols, state.metrics, pageCount])
 
   /**
    * The gesture is on the header *cell*, not on a control inside it, because
@@ -1680,9 +1871,14 @@ export function DataTable(props: DataTableProps) {
   const copyRange = () => {
     // A whole column copies every row the filters left, not the eight on
     // screen: the rows that are not on screen are the reason it was taken.
-    const rows = wholeColumnRect ? filtered : visible
-    const rect = wholeColumnRect ?? rangeBox
-    if (!rect) return
+    // Those values are already in hand — `useColumnValues` fetched them when
+    // the column was taken — so this is not a second round trip, and if they
+    // have not landed yet there is nothing honest to put on the clipboard.
+    const rows = wholeColumnRect ? wholeColumnData : visible
+    const rect = wholeColumnRect
+      ? rows && { ...wholeColumnRect, bottom: rows.length - 1 }
+      : rangeBox
+    if (!rows || !rect) return
     const { cells } = rangeSize(rect)
     void writeClipboard(
       rangeText(rows, state.cols, rect),
@@ -1788,13 +1984,17 @@ export function DataTable(props: DataTableProps) {
   const editingRef = useRef(state.editing)
   editingRef.current = state.editing
 
+  /** The row being edited is on screen by definition — an editor opened on it. */
+  const rowOnPage = (id: string) => visible.find((r) => r.id === id) ?? null
+
   const commitCell = (id: string, key: ColumnKey, raw: string) => {
     if (!editingRef.current) return
     editingRef.current = null
     const value = raw.trim()
-    if (value) {
+    const record = rowOnPage(id)
+    if (value && record) {
       // refuse to blank a field
-      commitRecords(records.map((r) => (r.id === id ? { ...r, [key]: value } : r)))
+      applyChange({ kind: 'update', record: { ...record, [key]: value } })
     }
     dispatch({ type: 'closeEditor' })
   }
@@ -1803,12 +2003,13 @@ export function DataTable(props: DataTableProps) {
   // by construction — the picker offers nothing else — which is the narrowing
   // the computed key hides from TypeScript, exactly as in `commitCell` above.
   const setEnum = (id: string, key: ColumnKey, value: string) => {
-    commitRecords(records.map((r) => (r.id === id ? { ...r, [key]: value } : r)))
+    const record = rowOnPage(id)
+    if (record) applyChange({ kind: 'update', record: { ...record, [key]: value } })
     dispatch({ type: 'enumSet' }) // back to picking, so another field can follow
   }
 
   const confirmDelete = (id: string) => {
-    commitRecords(records.filter((r) => r.id !== id))
+    applyChange({ kind: 'delete', ids: [id] })
     dispatch({ type: 'dropIds', ids: [id] })
   }
 
@@ -1883,32 +2084,42 @@ export function DataTable(props: DataTableProps) {
       return
     }
 
-    commitRecords([
-      {
-        id: nextId(records),
-        name,
-        date: draft.date.trim(),
-        status: draft.status,
-        solvedCases: draft.solvedCases.trim() || '0',
-        favouriteSeason: draft.favouriteSeason,
-        address: draft.address.trim(),
-        // The draft collects only the visible columns, and `email` is not one
-        // any more — it is a detail-pane field now, filled in after the fact
-        // like `owner` and `note` below it.
-        email: '',
-        // Free text, so it is written in the language the record was made in
-        // and stays that way — unlike `status` and `favouriteSeason` above,
-        // which are canonical values the whole engine matches on.
-        owner: t.draftOwner,
-        activity: t.draftActivity,
-        plan: t.draftPlan,
-        note: '',
-      },
-      ...records,
-    ])
-    setDraftInvalid(false)
-    dispatch({ type: 'clearDraft' })
-    dispatch({ type: 'setPage', page: 0 })
+    const build = (id: string) => {
+      applyChange({
+        kind: 'create',
+        record: {
+          id,
+          name,
+          date: draft.date.trim(),
+          status: draft.status,
+          solvedCases: draft.solvedCases.trim() || '0',
+          favouriteSeason: draft.favouriteSeason,
+          address: draft.address.trim(),
+          // The draft collects only the visible columns, and `email` is not one
+          // any more — it is a detail-pane field now, filled in after the fact
+          // like `owner` and `note` below it.
+          email: '',
+          // Free text, so it is written in the language the record was made in
+          // and stays that way — unlike `status` and `favouriteSeason` above,
+          // which are canonical values the whole engine matches on.
+          owner: t.draftOwner,
+          activity: t.draftActivity,
+          plan: t.draftPlan,
+          note: '',
+        },
+      })
+      setDraftInvalid(false)
+      dispatch({ type: 'clearDraft' })
+      dispatch({ type: 'setPage', page: 0 })
+    }
+
+    /* The id is the source's to hand out: an array can read the highest one it
+       holds, and a database is the only thing that can promise the next one is
+       free. A synchronous source answers here and now, so the draft row still
+       commits within the click that saved it. */
+    const id = source.nextId()
+    if (isPromise(id)) void id.then(build)
+    else build(id)
   }
 
   /**
@@ -1955,7 +2166,20 @@ export function DataTable(props: DataTableProps) {
    * stylesheet, which is also where the widths live.
    * ------------------------------------------------------------------- */
 
-  const selectedRecords = () => records.filter((r) => state.selected[r.id])
+  /**
+   * The file, and separately the records to tell `onExport` about.
+   *
+   * They are not the same list any more, and the whole-column case is why: the
+   * `.csv` of one column needs that column's values, which are already in hand,
+   * while `onExport` is documented to receive the whole record behind each row
+   * — a hundred thousand of them, forty megabytes, for eleven fields the file
+   * does not carry. So the records are fetched only when a host is actually
+   * listening, and through `collect`, which a source may not implement at all.
+   */
+  interface ExportBuild {
+    plan: ExportPlan
+    records: DataTableRecord[]
+  }
 
   /**
    * What Export would export right now, or `null` if it would export nothing.
@@ -1967,40 +2191,67 @@ export function DataTable(props: DataTableProps) {
    * ask which was meant, so the narrower one wins — a user who dragged across
    * four cells after ticking a row is looking at the four cells.
    */
-  const exportPlan = (): ExportPlan | null => {
+  const buildExport = (): Awaitable<ExportBuild | null> => {
     // Every page of it, which is the reason the column was taken at all.
     if (wholeColumnRect) {
-      return {
+      if (!wholeColumnData) return null
+      const plan: ExportPlan = {
         source: 'column',
         columns: [state.cols[wholeColumnRect.left]],
-        records: filtered,
+        records: wholeColumnData,
       }
+      const collected = onExport ? source.collect?.(filter) : undefined
+      if (collected === undefined) return { plan, records: [] }
+      return isPromise(collected)
+        ? collected.then((records) => ({ plan, records }))
+        : { plan, records: collected }
     }
+
     if (rangeBox) {
+      const rows = visible.slice(rangeBox.top, rangeBox.bottom + 1)
       return {
-        source: 'cells',
-        columns: state.cols.slice(rangeBox.left, rangeBox.right + 1),
-        records: visible.slice(rangeBox.top, rangeBox.bottom + 1),
+        plan: {
+          source: 'cells',
+          columns: state.cols.slice(rangeBox.left, rangeBox.right + 1),
+          records: rows,
+        },
+        records: rows,
       }
     }
-    const rows = selectedRecords()
-    return rows.length ? { source: 'rows', columns: state.cols, records: rows } : null
+
+    if (selectedIds.length === 0) return null
+    // The ticked rows are the one selection that spans pages *and* means whole
+    // records, so this is the only place the source is asked to look ids up.
+    const picked = source.recordsByIds(selectedIds)
+    const shape = (rows: DataTableRecord[]): ExportBuild | null =>
+      rows.length ? { plan: { source: 'rows', columns: state.cols, records: rows }, records: rows } : null
+    return isPromise(picked) ? picked.then(shape) : shape(picked)
   }
 
-  const canExport = !exporting && (selectedCount > 0 || !!rangeBox || !!wholeColumnRect)
+  const canExport =
+    !exporting &&
+    (selectedCount > 0 || !!rangeBox || (!!wholeColumnRect && !!wholeColumnData))
 
-  const startExport = () => {
-    const plan = exportPlan()
-    if (!plan) return
-    const cells = planSize(plan)
+  const beginExport = (build: ExportBuild | null) => {
+    if (!build) return
+    const cells = planSize(build.plan)
     setExporting({
       phase: 'working',
       step: 0,
-      csv: planCsv(plan, t.columns),
-      records: plan.records,
-      name: defaultExportName(plan, headTitle, t.columns),
+      csv: planCsv(build.plan, t.columns),
+      records: build.records,
+      name: defaultExportName(build.plan, headTitle, t.columns),
     })
     announce(t.preparingExport(cells))
+  }
+
+  const startExport = () => {
+    const build = buildExport()
+    // Synchronous when it can be, so the bar opens on the press rather than a
+    // tick later — which is what every test written against the array path
+    // expects, and what pressing a button ought to feel like.
+    if (isPromise(build)) void build.then(beginExport)
+    else beginExport(build)
   }
 
   /**
@@ -2121,9 +2372,9 @@ export function DataTable(props: DataTableProps) {
   } as CSSProperties
 
   const rangeLabel =
-    filtered.length === 0
+    matchingCount === 0
       ? '0'
-      : `${start + 1}–${Math.min(start + rowsPerPage, filtered.length)}`
+      : `${start + 1}–${Math.min(start + rowsPerPage, matchingCount)}`
 
   const goToPage = (next: number) => {
     dispatch({ type: 'setPage', page: Math.max(0, Math.min(next, pageCount - 1)) })
@@ -2163,6 +2414,13 @@ export function DataTable(props: DataTableProps) {
          the live region are all in it too. */
       lang={locale}
       data-dt-motion={motionPreference}
+      /* Only ever true for an asynchronous source, and only while a query is in
+         flight. The rows underneath are the previous answer, still readable and
+         still interactive — this says "there is a newer one coming", which is
+         what `aria-busy` means, and the stylesheet uses the attribute to take
+         the body down a shade rather than to cover it. */
+      data-dt-busy={busy ? '' : undefined}
+      aria-busy={busy || undefined}
       onKeyDown={onRootKeyDown}
     >
       {showHeader ? (
@@ -2198,11 +2456,11 @@ export function DataTable(props: DataTableProps) {
           <div className="dt-stats">
             <div>
               <div className="dt-stat-label">{t.statTotal}</div>
-              <div className="dt-stat-value">{records.length}</div>
+              <div className="dt-stat-value">{totalCount}</div>
             </div>
             <div>
               <div className="dt-stat-label">{t.statMatching}</div>
-              <div className="dt-stat-value">{filtered.length}</div>
+              <div className="dt-stat-value">{matchingCount}</div>
             </div>
             <div>
               <div className="dt-stat-label">{t.statSelected}</div>
@@ -2517,7 +2775,14 @@ export function DataTable(props: DataTableProps) {
             />
           ) : null}
 
-          {visible.map((record, index) => (
+          {rowWindow ? <RowSpacer height={rowWindow.padTop} cols={state.cols.length} /> : null}
+
+          {rendered.map((record, offset) => {
+            // The index within the *page*, not within what is rendered: it is
+            // what `data-row` addresses for cell selection, what the zebra
+            // stripe alternates on, and what "row 3 of 5000" counts.
+            const index = renderedFrom + offset
+            return (
             <RecordRow
               key={record.id}
               record={record}
@@ -2555,12 +2820,28 @@ export function DataTable(props: DataTableProps) {
               onEnterEnd={(id) => dispatch({ type: 'endEnter', id })}
               onCollapseEnd={(id) => dispatch({ type: 'endCollapse', id })}
             />
-          ))}
+            )
+          })}
+
+          {rowWindow ? (
+            <RowSpacer height={rowWindow.padBottom} cols={state.cols.length} />
+          ) : null}
+
+          {awaitingFirstPage ? (
+            <SkeletonRows rows={rowsPerPage} cols={state.cols.length} label={t.loading} />
+          ) : null}
         </table>
       </div>
 
-      {/* a draft row still counts as something on screen */}
-      {visible.length === 0 && !state.draft ? (
+      {/* A failed query is not an empty result, and saying "no records" for one
+          would be a lie the reader has no way to see through. */}
+      {sourceError ? (
+        <div className="dt-empty dt-load-failed" role="alert">
+          <div className="dt-empty-title">{t.loadFailed}</div>
+          <div className="dt-empty-body">{sourceError.message}</div>
+        </div>
+      ) : /* a draft row still counts as something on screen */
+      visible.length === 0 && !state.draft && !awaitingFirstPage ? (
         <div className="dt-empty">
           <div className="dt-empty-title">{t.emptyTitle}</div>
           <div className="dt-empty-body">{t.emptyBody}</div>
@@ -2574,9 +2855,9 @@ export function DataTable(props: DataTableProps) {
             placeholder cannot say both, so the dictionary hands back the two
             halves and this puts the <strong> between them. */}
         <div className="dt-foot-count">
-          {t.footCount(filtered.length).before}
+          {t.footCount(matchingCount).before}
           <strong>{rangeLabel}</strong>
-          {t.footCount(filtered.length).after}
+          {t.footCount(matchingCount).after}
         </div>
 
         {/* PORT: the selection actions and the pager, as one right-hand group.

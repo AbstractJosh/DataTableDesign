@@ -7,6 +7,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import type { Locale } from './i18n'
+import type { RecordSource } from './source'
 import type { MetricPrefs, MetricPrefsSeed } from './metrics'
 
 export type RecordStatus = 'Success' | 'In progress' | 'Failed'
@@ -48,6 +49,35 @@ export type DraftRecord = Pick<
   'name' | 'date' | 'status' | 'solvedCases' | 'favouriteSeason' | 'address'
 >
 
+/**
+ * The twelve fields of a record, in declaration order.
+ *
+ * Declared once because three places have to agree on it and none of them can
+ * infer it from the interface: the SQLite server's column list, its `SELECT`,
+ * and the client-side diff that decides whether two records with the same id
+ * are the same record. A field added above and forgotten here is a field that
+ * silently stops being stored and stops counting as a change, which is a
+ * quieter bug than it deserves to be — `satisfies` makes a *wrong* name an
+ * error, and `RECORD_FIELDS.length` is asserted against the interface in
+ * `recordsApi.test.ts`.
+ */
+export const RECORD_FIELDS = [
+  'id',
+  'name',
+  'date',
+  'status',
+  'solvedCases',
+  'favouriteSeason',
+  'address',
+  'email',
+  'owner',
+  'activity',
+  'plan',
+  'note',
+] as const satisfies readonly (keyof DataTableRecord)[]
+
+export type RecordField = (typeof RECORD_FIELDS)[number]
+
 export type SortState = { key: ColumnKey; dir: 'asc' | 'desc' } | null
 
 /**
@@ -58,7 +88,27 @@ export type SortState = { key: ColumnKey; dir: 'asc' | 'desc' } | null
 export type MotionPreference = 'auto' | 'always' | 'never'
 
 export interface DataTableProps {
-  /** Controlled record list. Omit to let the component own its records. */
+  /**
+   * Where the rows come from, when they are too many to hand over.
+   *
+   * The default is the array below, and everything about `records` /
+   * `defaultRecords` / `onRecordsChange` is unchanged by this existing: pass
+   * none of this and the component derives its page out of an array it holds,
+   * synchronously, exactly as it always has.
+   *
+   * Pass a source and it asks for a page at a time instead — the rows on
+   * screen, the two counts in the header, and nothing else — so a hundred
+   * thousand records can be paged, searched, filtered and sorted without any
+   * of them being in the browser.
+   *
+   * The two are alternatives, not layers. With a source set, `records`,
+   * `defaultRecords` and `onRecordsChange` all do nothing: the source owns the
+   * data, and it is told what the table *did* rather than handed the whole next
+   * list. A host that wants the array contract against a remote store has
+   * `diffRecords`, which turns one back into the other. See `source.ts`.
+   */
+  source?: RecordSource
+  /** Controlled record list. Ignored when `source` is set. */
   records?: DataTableRecord[]
   /** Initial records when uncontrolled. Defaults to the bundled demo set. */
   defaultRecords?: DataTableRecord[]

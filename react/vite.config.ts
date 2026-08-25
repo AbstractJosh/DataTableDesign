@@ -31,6 +31,8 @@ function copyFontFolder(): Plugin {
   }
 }
 
+const API_PORT = Number(process.env.API_PORT ?? 5174)
+
 export default defineConfig({
   plugins: [
     react(),
@@ -43,6 +45,22 @@ export default defineConfig({
     }),
     copyFontFolder(),
   ],
+
+  /**
+   * The demo's records come from the SQLite server in `server/`, which listens
+   * on its own port. Proxying rather than pointing the client at
+   * `http://127.0.0.1:5174` keeps the app on one origin: no CORS preflight on
+   * every request, and `baseUrl` stays the relative `/api` that a real host
+   * would use.
+   */
+  server: {
+    proxy: {
+      '/api': {
+        target: `http://127.0.0.1:${API_PORT}`,
+        changeOrigin: false,
+      },
+    },
+  },
 
   // `npm run dev` / `npm run preview` serve index.html + src/demo.
   // `npm run build` runs the library build configured below.
@@ -88,6 +106,11 @@ export default defineConfig({
     globals: true,
     setupFiles: './vitest.setup.ts',
     css: true,
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    /**
+     * The server's tests live beside it and run under `node` rather than
+     * `jsdom` — each declares that with a `@vitest-environment node` docblock,
+     * because `node:sqlite` has no business being loaded into a fake DOM.
+     */
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'server/**/*.{test,spec}.{ts,tsx}'],
   },
 })
